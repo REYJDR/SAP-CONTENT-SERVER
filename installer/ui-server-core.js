@@ -39,6 +39,29 @@ function toBool(value, defaultValue) {
 function buildInstallerArgs(input, setupScript) {
   const args = [setupScript, "--non-interactive"];
 
+  const modeRaw = String(input.mode || "admin").trim().toLowerCase();
+  const mode = modeRaw === "end-user" ? "end-user" : "admin";
+  args.push("--mode", mode);
+
+  const configFile = String(input.configFile || "").trim();
+  if (configFile) {
+    args.push("--config-file", configFile);
+  }
+
+  const baseUrl = String(input.baseUrl || "").trim();
+  if (baseUrl) {
+    args.push("--base-url", baseUrl);
+  }
+
+  if (mode === "end-user") {
+    const dryRun = toBool(input.dryRun, false);
+    if (dryRun) {
+      args.push("--dry-run");
+    }
+    args.push("--output-json");
+    return args;
+  }
+
   const project = String(input.project || "").trim();
   const region = String(input.region || "us-central1").trim() || "us-central1";
   const driveFolderId = String(input.driveFolderId || "").trim();

@@ -7,8 +7,9 @@ Version: 1.0.0 (installer + metadata-driven replication update)
 
 - Drive replication now happens only when required metadata exists.
 - Metadata endpoint accepts and persists `originalFileName`.
+- Metadata endpoint supports batch payloads (`documents[]`) and single payloads.
 - Drive folder hierarchy now follows:
-  - `<GOOGLE_DRIVE_FOLDER_ID>/<businessObjectType>/<businessObjectId>/<originalFileName>`
+  - `<GOOGLE_DRIVE_FOLDER_ID>/<FO TYPE>/<FO ID (source - destination)>/Attachment/<originalFileName>`
 - If file is uploaded first, later metadata submission triggers replication.
 - Added cross-platform installer flow:
   - Interactive CLI installer
@@ -24,9 +25,12 @@ Version: 1.0.0 (installer + metadata-driven replication update)
 
 `POST /sap/metadata` now supports:
 
-- `documentId` (or `docId`)
+- single document object (`documentId` / `docId`)
+- batch (`documents: []`) or direct array (`[]`)
 - `businessObjectType`
 - `businessObjectId`
+- `sourceLocation`
+- `destinationLocation`
 - `originalFileName` (or `fileName` alias)
 - `sourceSystem`
 - `attributes`
@@ -111,6 +115,11 @@ Main endpoints:
 
 - `/api/sap/metadata`
 - `/api/sap/content/raw`
+
+Installer operating modes:
+
+- `admin`: requires cloud tooling, provisions and can export end-user config
+- `end-user`: no cloud tooling required, validates connectivity using `baseUrl` or config file
 
 PPF adapter sequence:
 

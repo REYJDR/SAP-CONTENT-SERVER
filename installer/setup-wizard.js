@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const https = require("node:https");
 const { spawnSync } = require("node:child_process");
 const { createInterface } = require("node:readline/promises");
 const { stdin: input, stdout: output } = require("node:process");
@@ -137,14 +138,101 @@ function quoteConfigValue(value) {
   return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
+function resolvePathFromCwd(inputPath) {
+  if (!inputPath) {
+    return "";
+  }
+
+  return path.isAbsolute(inputPath) ? inputPath : path.join(process.cwd(), inputPath);
+}
+
+function readJsonFile(inputPath, fallback = {}) {
+  const resolvedPath = resolvePathFromCwd(inputPath);
+  if (!resolvedPath || !fs.existsSync(resolvedPath)) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(outputPath, payload) {
+  const resolvedPath = resolvePathFromCwd(outputPath);
+  if (!resolvedPath) {
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  fs.writeFileSync(resolvedPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  console.log(`Config file written to: ${resolvedPath}`);
+}
+
+function parseBaseUrl(input) {
+  const normalized = String(input || "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    return new URL(normalized);
+  } catch {
+    return null;
+  }
+}
+
+function buildEndpointUrl(baseUrl, suffix) {
+  const normalizedSuffix = String(suffix || "").replace(/^\/+/, "");
+  const normalizedBasePath = baseUrl.pathname.endsWith("/") ? baseUrl.pathname : `${baseUrl.pathname}/`;
+  const endpointPath = `${normalizedBasePath}${normalizedSuffix}`;
+  return new URL(endpointPath, `${baseUrl.protocol}//${baseUrl.host}`);
+}
+
+function httpGetJson(urlValue) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        method: "GET",
+        hostname: urlValue.hostname,
+        path: `${urlValue.pathname}${urlValue.search}`,
+        port: urlValue.port || 443,
+        headers: {
+          Accept: "application/json"
+        }
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => {
+          body += chunk.toString();
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode || 0,
+            body
+          });
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 function printUsage() {
   console.log(`
 Usage:
   setup-wizard [--non-interactive] [options]
 
 Options:
+  --mode <admin|end-user>          Installer mode (default: admin)
   --project <id>                    Firebase project id
   --region <region>                 Functions region (default: us-central1)
+  --base-url <url>                  API base URL (end-user mode)
+  --config-file <path>              Read prebuilt installer config JSON (end-user mode)
+  --export-config [path]            Write end-user config JSON after admin run
   --replicate-to-drive <true|false> Enable Drive replication
   --drive-folder-id <id>            Drive root folder id (required if replication=true)
   --replicate-strict <true|false>   Strict replication mode
@@ -161,6 +249,10 @@ Options:
 Environment fallbacks:
   INSTALLER_PROJECT_ID
   INSTALLER_REGION
+  INSTALLER_MODE
+  INSTALLER_BASE_URL
+  INSTALLER_CONFIG_FILE
+  INSTALLER_EXPORT_CONFIG
   INSTALLER_REPLICATE_TO_DRIVE
   INSTALLER_DRIVE_FOLDER_ID
   INSTALLER_REPLICATE_STRICT
@@ -208,6 +300,13 @@ async function main() {
   const nonInteractive = getBooleanSetting(args, "non-interactive", "INSTALLER_NON_INTERACTIVE", false);
   const dryRun = getBooleanSetting(args, "dry-run", "INSTALLER_DRY_RUN", false);
   const installDeps = getBooleanSetting(args, "install-deps", "INSTALLER_INSTALL_DEPS", true);
+  const installerModeRaw = getStringSetting(args, "mode", "INSTALLER_MODE") || "admin";
+  const installerMode = installerModeRaw.toLowerCase() === "end-user" ? "end-user" : "admin";
+  const configFilePath = getStringSetting(args, "config-file", "INSTALLER_CONFIG_FILE");
+  const exportConfigValue =
+    Object.prototype.hasOwnProperty.call(args, "export-config")
+      ? args["export-config"]
+      : process.env.INSTALLER_EXPORT_CONFIG;
   const outputJsonValue = Object.prototype.hasOwnProperty.call(args, "output-json")
     ? args["output-json"]
     : process.env.INSTALLER_OUTPUT_JSON;
@@ -229,6 +328,62 @@ async function main() {
     console.log("\nSAP Content Server native installer\n");
     console.log("This wizard configures Firebase + GCP prerequisites and can deploy Functions.\n");
 
+    const configFile = readJsonFile(configFilePath, {});
+
+    if (installerMode === "end-user") {
+      const baseUrlFromArgs = getStringSetting(args, "base-url", "INSTALLER_BASE_URL");
+      const baseUrl =
+        baseUrlFromArgs ||
+        (typeof configFile.baseUrl === "string" ? configFile.baseUrl : "") ||
+        (typeof configFile?.endUser?.baseUrl === "string" ? configFile.endUser.baseUrl : "");
+
+      const parsedBaseUrl = parseBaseUrl(baseUrl);
+      if (!parsedBaseUrl) {
+        console.error("End-user mode requires --base-url or --config-file with baseUrl.");
+        process.exit(EXIT_CODES.CONFIGURATION);
+      }
+
+      const healthUrl = buildEndpointUrl(parsedBaseUrl, "health");
+      console.log(`Validating connectivity to: ${healthUrl.toString()}`);
+
+      if (!dryRun) {
+        const probe = await httpGetJson(healthUrl);
+        if (probe.statusCode < 200 || probe.statusCode >= 300) {
+          console.error(`Health probe failed with HTTP ${probe.statusCode}`);
+          console.error(probe.body || "No response body");
+          process.exit(EXIT_CODES.CONFIGURATION);
+        }
+      }
+
+      console.log("\nEnd-user setup completed successfully.");
+      console.log(`Base URL: ${parsedBaseUrl.toString().replace(/\/$/, "")}`);
+      console.log(`Health: ${healthUrl.toString()}`);
+      console.log(`Metadata endpoint: ${buildEndpointUrl(parsedBaseUrl, "sap/metadata").toString()}`);
+      console.log(`Raw upload endpoint: ${buildEndpointUrl(parsedBaseUrl, "sap/content/raw").toString()}`);
+      console.log("No gcloud/firebase tooling was required in end-user mode.");
+
+      if (outputJsonValue) {
+        writeJsonSummary(outputJsonValue, {
+          ok: true,
+          mode: installerMode,
+          baseUrl: parsedBaseUrl.toString().replace(/\/$/, ""),
+          endpoints: {
+            health: healthUrl.toString(),
+            metadata: buildEndpointUrl(parsedBaseUrl, "sap/metadata").toString(),
+            uploadRaw: buildEndpointUrl(parsedBaseUrl, "sap/content/raw").toString()
+          },
+          settings: {
+            nonInteractive,
+            dryRun,
+            configFilePath: configFilePath || undefined
+          },
+          generatedAt: new Date().toISOString()
+        });
+      }
+
+      return;
+    }
+
     const requiredBinaries = ["node", "npm", "firebase", "gcloud"];
     if (!dryRun) {
       const missing = requiredBinaries.filter((binary) => !hasBinary(binary));
@@ -245,7 +400,9 @@ async function main() {
     }
 
     const currentProject = readFirebaserc(cwd)?.projects?.default || "";
-    const projectFromArgs = getStringSetting(args, "project", "INSTALLER_PROJECT_ID");
+    const projectFromArgs =
+      getStringSetting(args, "project", "INSTALLER_PROJECT_ID") ||
+      (typeof configFile.projectId === "string" ? configFile.projectId : "");
     const projectInput = nonInteractive
       ? ""
       : await rl.question(`Firebase project id${currentProject ? ` [${currentProject}]` : ""}: `);
@@ -255,7 +412,9 @@ async function main() {
       process.exit(EXIT_CODES.CONFIGURATION);
     }
 
-    const regionFromArgs = getStringSetting(args, "region", "INSTALLER_REGION");
+    const regionFromArgs =
+      getStringSetting(args, "region", "INSTALLER_REGION") ||
+      (typeof configFile.region === "string" ? configFile.region : "");
     const regionInput = nonInteractive ? "" : await rl.question("Functions region [us-central1]: ");
     const region = regionFromArgs || (regionInput || "").trim() || "us-central1";
 
@@ -273,7 +432,9 @@ async function main() {
     let driveRefreshToken = "";
 
     if (replicateToDrive) {
-      const driveFolderArg = getStringSetting(args, "drive-folder-id", "INSTALLER_DRIVE_FOLDER_ID");
+      const driveFolderArg =
+        getStringSetting(args, "drive-folder-id", "INSTALLER_DRIVE_FOLDER_ID") ||
+        (typeof configFile.driveFolderId === "string" ? configFile.driveFolderId : "");
       driveFolderId = nonInteractive
         ? driveFolderArg
         : driveFolderArg || (await rl.question("Google Drive root folder ID: ")).trim();
@@ -364,6 +525,28 @@ async function main() {
     console.log(`Raw upload endpoint: ${baseUrl}/sap/content/raw`);
     console.log("Run verification: npm run verify:deployed");
 
+    const endUserConfigPath =
+      exportConfigValue && exportConfigValue !== "true"
+        ? exportConfigValue
+        : exportConfigValue
+          ? "installer/end-user-config.json"
+          : "";
+
+    if (endUserConfigPath) {
+      writeJsonFile(endUserConfigPath, {
+        mode: "end-user",
+        projectId,
+        region,
+        baseUrl,
+        endpoints: {
+          health: `${baseUrl}/health`,
+          metadata: `${baseUrl}/sap/metadata`,
+          uploadRaw: `${baseUrl}/sap/content/raw`
+        },
+        generatedAt: new Date().toISOString()
+      });
+    }
+
     if (nonInteractive) {
       console.log("Mode: non-interactive");
     }
@@ -374,6 +557,7 @@ async function main() {
     if (outputJsonValue) {
       writeJsonSummary(outputJsonValue, {
         ok: true,
+        mode: installerMode,
         projectId,
         region,
         baseUrl,

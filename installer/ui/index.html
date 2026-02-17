@@ -108,6 +108,20 @@
       <div class="card">
         <div class="grid">
           <div>
+            <label for="mode">Mode</label>
+            <input id="mode" type="text" value="admin" placeholder="admin or end-user" />
+          </div>
+          <div>
+            <label for="configFile">Config file path (optional)</label>
+            <input id="configFile" type="text" placeholder="installer/end-user-config.json" />
+          </div>
+
+          <div class="full">
+            <label for="baseUrl">Base URL (end-user mode)</label>
+            <input id="baseUrl" type="text" placeholder="https://us-central1-<project>.cloudfunctions.net/api" />
+          </div>
+
+          <div>
             <label for="project">Firebase project ID</label>
             <input id="project" type="text" placeholder="sap-content-server-ad957" />
           </div>
@@ -192,6 +206,9 @@
 
       runBtn.addEventListener("click", async () => {
         const payload = {
+          mode: getValue("mode"),
+          configFile: getValue("configFile"),
+          baseUrl: getValue("baseUrl"),
           project: getValue("project"),
           region: getValue("region"),
           installDeps: getChecked("installDeps"),

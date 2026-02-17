@@ -41,6 +41,39 @@ After creating your Firebase project, run the interactive bootstrap installer:
 npm run bootstrap
 ```
 
+### Recommended distribution model (admin + end-user)
+
+Use two modes to avoid technical setup for final users:
+
+- `admin` mode: technical owner runs provisioning (gcloud/firebase), deploys, and exports a config file.
+- `end-user` mode: final user only validates connectivity using `baseUrl` or a provided config file (no `gcloud`/`firebase` required).
+
+Admin example (export config for users):
+
+```bash
+npm run installer:run -- --mode admin --project <project-id> --region us-central1 --export-config installer/end-user-config.json
+```
+
+End-user example (no cloud CLIs required):
+
+```bash
+npm run installer:run -- --mode end-user --config-file installer/end-user-config.json
+```
+
+Or with direct URL:
+
+```bash
+npm run installer:run -- --mode end-user --base-url https://us-central1-<project>.cloudfunctions.net/api
+```
+
+Ready-to-share package output (generated locally):
+
+- `installer/releases/end-user/windows/setup-wizard-win-x64.exe`
+- `installer/releases/end-user/windows/end-user-config.json`
+- `installer/releases/end-user/macos/setup-wizard-macos-arm64`
+- `installer/releases/end-user/macos/end-user-config.json`
+- `installer/releases/end-user/README_END_USER.md`
+
 ### Native executable installer (Windows + macOS)
 
 Build native installer binaries:
