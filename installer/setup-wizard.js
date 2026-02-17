@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const https = require("node:https");
+const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const { createInterface } = require("node:readline/promises");
 const { stdin: input, stdout: output } = require("node:process");
@@ -45,6 +46,57 @@ function parseArgs(argv) {
   return args;
 }
 
+function findAutoConfigFile(cwd) {
+  const execDir = path.dirname(process.execPath || "");
+  const candidates = [
+    path.join(cwd, "installer", "end-user-config.json"),
+    path.join(cwd, "end-user-config.json"),
+    path.join(execDir, "end-user-config.json")
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function findAutoFirebaseConfigFile(cwd) {
+  const execDir = path.dirname(process.execPath || "");
+  const candidates = [
+    path.join(cwd, "installer", "firebase-config.json"),
+    path.join(cwd, "firebase-config.json"),
+    path.join(execDir, "firebase-config.json")
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function findAutoServiceAccountFile(cwd) {
+  const execDir = path.dirname(process.execPath || "");
+  const candidates = [
+    path.join(cwd, "installer", "service-account.json"),
+    path.join(cwd, "service-account.json"),
+    path.join(execDir, "service-account.json")
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
 function readFirebaserc(cwd) {
   const filePath = path.join(cwd, ".firebaserc");
   if (!fs.existsSync(filePath)) {
@@ -78,7 +130,11 @@ function runCommand(command, args, options = {}) {
   const result = spawnSync(command, args, {
     shell: true,
     stdio: captureOutput ? "pipe" : "inherit",
-    encoding: "utf8"
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...(options.env || {})
+    }
   });
 
   const success = result.status === 0;
@@ -159,6 +215,27 @@ function readJsonFile(inputPath, fallback = {}) {
   }
 }
 
+function parseJsonContent(text, fallback = {}) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+function readJsonInput(value, fallback = {}) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (raw.startsWith("{") || raw.startsWith("[")) {
+    return parseJsonContent(raw, fallback);
+  }
+
+  return readJsonFile(raw, fallback);
+}
+
 function writeJsonFile(outputPath, payload) {
   const resolvedPath = resolvePathFromCwd(outputPath);
   if (!resolvedPath) {
@@ -180,6 +257,175 @@ function parseBaseUrl(input) {
     return new URL(normalized);
   } catch {
     return null;
+  }
+}
+
+function base64UrlEncode(value) {
+  const asBuffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value), "utf8");
+  return asBuffer
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function readServiceAccount(serviceAccountPath) {
+  const parsed = readJsonFile(serviceAccountPath, {});
+  if (
+    !parsed ||
+    typeof parsed.client_email !== "string" ||
+    typeof parsed.private_key !== "string" ||
+    typeof parsed.token_uri !== "string"
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function httpPostForm(urlValue, formBody, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const body = String(formBody || "");
+    const req = https.request(
+      {
+        method: "POST",
+        hostname: urlValue.hostname,
+        path: `${urlValue.pathname}${urlValue.search}`,
+        port: urlValue.port || 443,
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(body),
+          ...headers
+        }
+      },
+      (res) => {
+        let responseBody = "";
+        res.on("data", (chunk) => {
+          responseBody += chunk.toString();
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode || 0,
+            body: responseBody
+          });
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function googleApiRequest(method, urlValue, accessToken, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : "";
+    const req = https.request(
+      {
+        method,
+        hostname: urlValue.hostname,
+        path: `${urlValue.pathname}${urlValue.search}`,
+        port: urlValue.port || 443,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json",
+          ...(payload
+            ? {
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(payload)
+              }
+            : {})
+        }
+      },
+      (res) => {
+        let responseBody = "";
+        res.on("data", (chunk) => {
+          responseBody += chunk.toString();
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode || 0,
+            body: responseBody
+          });
+        });
+      }
+    );
+
+    req.on("error", reject);
+    if (payload) {
+      req.write(payload);
+    }
+    req.end();
+  });
+}
+
+async function getAccessTokenFromServiceAccount(serviceAccount, scopes) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "RS256", typ: "JWT" };
+  const claimSet = {
+    iss: serviceAccount.client_email,
+    scope: scopes.join(" "),
+    aud: serviceAccount.token_uri,
+    exp: now + 3600,
+    iat: now
+  };
+
+  const unsignedToken = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(claimSet))}`;
+  const signature = crypto.createSign("RSA-SHA256").update(unsignedToken).end().sign(serviceAccount.private_key);
+  const assertion = `${unsignedToken}.${base64UrlEncode(signature)}`;
+
+  const tokenUrl = new URL(serviceAccount.token_uri);
+  const tokenResponse = await httpPostForm(
+    tokenUrl,
+    `grant_type=${encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer")}&assertion=${encodeURIComponent(assertion)}`
+  );
+
+  if (tokenResponse.statusCode < 200 || tokenResponse.statusCode >= 300) {
+    return null;
+  }
+
+  const parsed = parseJsonContent(tokenResponse.body, {});
+  if (typeof parsed.access_token !== "string" || !parsed.access_token) {
+    return null;
+  }
+
+  return parsed.access_token;
+}
+
+async function ensureRequiredApisEnabled(projectId, accessToken, dryRun) {
+  const apis = [
+    "cloudfunctions.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "firestore.googleapis.com",
+    "firebase.googleapis.com",
+    "storage.googleapis.com"
+  ];
+
+  for (const apiName of apis) {
+    const endpoint = new URL(`https://serviceusage.googleapis.com/v1/projects/${projectId}/services/${apiName}:enable`);
+    if (dryRun) {
+      console.log(`[dry-run] enable API ${apiName}`);
+      continue;
+    }
+
+    const response = await googleApiRequest("POST", endpoint, accessToken, {});
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      console.log(`API enabled: ${apiName}`);
+      continue;
+    }
+
+    if (response.statusCode === 409 || response.statusCode === 400) {
+      console.log(`API already enabled or pending: ${apiName}`);
+      continue;
+    }
+
+    console.error(`Failed enabling API ${apiName}: HTTP ${response.statusCode}`);
+    if (response.body) {
+      console.error(response.body);
+    }
+    process.exit(EXIT_CODES.CONFIGURATION);
   }
 }
 
@@ -221,17 +467,46 @@ function httpGetJson(urlValue) {
   });
 }
 
+function resolveFirebaseCommand() {
+  if (hasBinary("firebase")) {
+    return { command: "firebase", prefixArgs: [] };
+  }
+
+  if (hasBinary("npx")) {
+    return { command: "npx", prefixArgs: ["--yes", "firebase-tools"] };
+  }
+
+  return null;
+}
+
+async function maybeWaitOnExit(waitOnExit) {
+  if (!waitOnExit || !process.stdin || !process.stdout) {
+    return;
+  }
+
+  process.stdout.write("\nPress Enter to close...\n");
+
+  await new Promise((resolve) => {
+    process.stdin.resume();
+    process.stdin.once("data", () => resolve());
+    process.stdin.once("error", () => resolve());
+    setTimeout(() => resolve(), 30000);
+  });
+}
+
 function printUsage() {
   console.log(`
 Usage:
   setup-wizard [--non-interactive] [options]
 
 Options:
-  --mode <admin|end-user>          Installer mode (default: admin)
+  --mode <admin|managed|bootstrap|end-user>  Installer mode (default: admin)
   --project <id>                    Firebase project id
   --region <region>                 Functions region (default: us-central1)
   --base-url <url>                  API base URL (end-user mode)
   --config-file <path>              Read prebuilt installer config JSON (end-user mode)
+  --firebase-config <json-or-path>  Firebase web config JSON or file path (managed mode)
+  --service-account <path>          Service account JSON path (managed mode)
   --export-config [path]            Write end-user config JSON after admin run
   --replicate-to-drive <true|false> Enable Drive replication
   --drive-folder-id <id>            Drive root folder id (required if replication=true)
@@ -252,6 +527,9 @@ Environment fallbacks:
   INSTALLER_MODE
   INSTALLER_BASE_URL
   INSTALLER_CONFIG_FILE
+  INSTALLER_FIREBASE_CONFIG
+  INSTALLER_SERVICE_ACCOUNT
+  INSTALLER_BOOTSTRAP
   INSTALLER_EXPORT_CONFIG
   INSTALLER_REPLICATE_TO_DRIVE
   INSTALLER_DRIVE_FOLDER_ID
@@ -288,6 +566,13 @@ function writeJsonSummary(outputJsonValue, summary) {
   console.log(`JSON summary written to: ${targetPath}`);
 }
 
+function printBootstrapInputGuide() {
+  console.log("\nBootstrap required files:");
+  console.log("- firebase-config.json (Firebase Console > Project settings > Your apps > Web app config)");
+  console.log("- service-account.json (Firebase Console > Project settings > Service accounts > Generate new private key)");
+  console.log("Place both files in the same folder as the installer executable, or pass --firebase-config and --service-account.");
+}
+
 async function main() {
   const cwd = process.cwd();
   const args = parseArgs(process.argv.slice(2));
@@ -300,9 +585,62 @@ async function main() {
   const nonInteractive = getBooleanSetting(args, "non-interactive", "INSTALLER_NON_INTERACTIVE", false);
   const dryRun = getBooleanSetting(args, "dry-run", "INSTALLER_DRY_RUN", false);
   const installDeps = getBooleanSetting(args, "install-deps", "INSTALLER_INSTALL_DEPS", true);
-  const installerModeRaw = getStringSetting(args, "mode", "INSTALLER_MODE") || "admin";
-  const installerMode = installerModeRaw.toLowerCase() === "end-user" ? "end-user" : "admin";
-  const configFilePath = getStringSetting(args, "config-file", "INSTALLER_CONFIG_FILE");
+  const hasExplicitMode =
+    Object.prototype.hasOwnProperty.call(args, "mode") || typeof process.env.INSTALLER_MODE === "string";
+  const hasProjectInput =
+    Object.prototype.hasOwnProperty.call(args, "project") || typeof process.env.INSTALLER_PROJECT_ID === "string";
+  const hasBaseUrlInput =
+    Object.prototype.hasOwnProperty.call(args, "base-url") || typeof process.env.INSTALLER_BASE_URL === "string";
+  const hasFirebaseConfigInput =
+    Object.prototype.hasOwnProperty.call(args, "firebase-config") ||
+    typeof process.env.INSTALLER_FIREBASE_CONFIG === "string";
+  const hasServiceAccountInput =
+    Object.prototype.hasOwnProperty.call(args, "service-account") ||
+    typeof process.env.INSTALLER_SERVICE_ACCOUNT === "string";
+
+  const autoConfigPath = findAutoConfigFile(cwd);
+  const autoFirebaseConfigPath = findAutoFirebaseConfigFile(cwd);
+  const autoServiceAccountPath = findAutoServiceAccountFile(cwd);
+  const configFilePath =
+    getStringSetting(args, "config-file", "INSTALLER_CONFIG_FILE") ||
+    (!hasExplicitMode && autoConfigPath ? autoConfigPath : "");
+
+  const firebaseConfigPath =
+    getStringSetting(args, "firebase-config", "INSTALLER_FIREBASE_CONFIG") ||
+    (!hasExplicitMode && autoFirebaseConfigPath ? autoFirebaseConfigPath : "");
+  const serviceAccountPathFromInput =
+    getStringSetting(args, "service-account", "INSTALLER_SERVICE_ACCOUNT") ||
+    (!hasExplicitMode && autoServiceAccountPath ? autoServiceAccountPath : "");
+
+  const shouldAutoBootstrap =
+    !hasExplicitMode &&
+    !hasProjectInput &&
+    !hasBaseUrlInput &&
+    (hasFirebaseConfigInput || autoFirebaseConfigPath) &&
+    (hasServiceAccountInput || autoServiceAccountPath);
+
+  const installerModeRaw =
+    getStringSetting(args, "mode", "INSTALLER_MODE") ||
+    (shouldAutoBootstrap
+      ? "bootstrap"
+      : !hasExplicitMode && !hasProjectInput && (hasBaseUrlInput || configFilePath)
+        ? "end-user"
+        : "admin");
+  const installerMode =
+    installerModeRaw.toLowerCase() === "end-user"
+      ? "end-user"
+      : installerModeRaw.toLowerCase() === "bootstrap"
+        ? "bootstrap"
+      : installerModeRaw.toLowerCase() === "managed"
+        ? "managed"
+        : "admin";
+  const shouldAutoWaitOnExit =
+    process.platform === "win32" &&
+    Boolean(process.pkg) &&
+    !hasExplicitMode &&
+    !hasProjectInput &&
+    (hasBaseUrlInput || Boolean(configFilePath));
+  const waitOnExit = getBooleanSetting(args, "wait-on-exit", "INSTALLER_WAIT_ON_EXIT", shouldAutoWaitOnExit);
   const exportConfigValue =
     Object.prototype.hasOwnProperty.call(args, "export-config")
       ? args["export-config"]
@@ -324,6 +662,11 @@ async function main() {
     });
   };
 
+  const runFirebase = (firebaseInfo, commandArgs, phaseExitCode, options = {}) => {
+    const mergedArgs = [...firebaseInfo.prefixArgs, ...commandArgs];
+    return run(firebaseInfo.command, mergedArgs, phaseExitCode, options);
+  };
+
   try {
     console.log("\nSAP Content Server native installer\n");
     console.log("This wizard configures Firebase + GCP prerequisites and can deploy Functions.\n");
@@ -340,6 +683,7 @@ async function main() {
       const parsedBaseUrl = parseBaseUrl(baseUrl);
       if (!parsedBaseUrl) {
         console.error("End-user mode requires --base-url or --config-file with baseUrl.");
+        console.error("Tip: place end-user-config.json next to the installer executable.");
         process.exit(EXIT_CODES.CONFIGURATION);
       }
 
@@ -381,6 +725,191 @@ async function main() {
         });
       }
 
+      await maybeWaitOnExit(waitOnExit);
+
+      return;
+    }
+
+    if (installerMode === "managed" || installerMode === "bootstrap") {
+      const firebaseConfigInput =
+        firebaseConfigPath ||
+        (typeof configFile.firebaseConfig === "object" ? JSON.stringify(configFile.firebaseConfig) : "");
+      const firebaseConfig = readJsonInput(firebaseConfigInput, {});
+
+      const serviceAccountPathInput =
+        serviceAccountPathFromInput ||
+        (typeof configFile.serviceAccountPath === "string" ? configFile.serviceAccountPath : "");
+      const serviceAccountPath = resolvePathFromCwd(serviceAccountPathInput);
+
+      if (!serviceAccountPath || !fs.existsSync(serviceAccountPath)) {
+        console.error("Managed/bootstrap mode requires --service-account with a valid JSON file path.");
+        printBootstrapInputGuide();
+        process.exit(EXIT_CODES.CONFIGURATION);
+      }
+
+      const serviceAccount = readServiceAccount(serviceAccountPath);
+      if (!serviceAccount) {
+        console.error("Invalid service-account.json. Expected client_email, private_key and token_uri.");
+        printBootstrapInputGuide();
+        process.exit(EXIT_CODES.CONFIGURATION);
+      }
+
+      const projectFromConfig = typeof firebaseConfig.projectId === "string" ? firebaseConfig.projectId : "";
+      const projectFromArgs = getStringSetting(args, "project", "INSTALLER_PROJECT_ID");
+      const projectId = projectFromArgs || projectFromConfig || readFirebaserc(cwd)?.projects?.default || "";
+      if (!projectId) {
+        console.error("Managed mode requires projectId in firebaseConfig or --project.");
+        console.error("Tip: verify firebase-config.json includes projectId.");
+        printBootstrapInputGuide();
+        process.exit(EXIT_CODES.CONFIGURATION);
+      }
+
+      const region =
+        getStringSetting(args, "region", "INSTALLER_REGION") ||
+        (typeof configFile.region === "string" ? configFile.region : "") ||
+        "us-central1";
+
+      const firebaseInfo = dryRun ? { command: "firebase", prefixArgs: [] } : resolveFirebaseCommand();
+      if (!firebaseInfo) {
+        console.error("Managed mode requires firebase CLI or npx to run firebase-tools.");
+        process.exit(EXIT_CODES.PREREQUISITES);
+      }
+
+      const authEnv = {
+        GOOGLE_APPLICATION_CREDENTIALS: serviceAccountPath,
+        FIREBASE_CLI_EXPERIMENTS: "webframeworks"
+      };
+
+      if (installerMode === "bootstrap") {
+        console.log("Enabling required Google APIs (bootstrap mode)...");
+        const accessToken = dryRun
+          ? "dry-run-token"
+          : await getAccessTokenFromServiceAccount(serviceAccount, [
+              "https://www.googleapis.com/auth/cloud-platform",
+              "https://www.googleapis.com/auth/firebase"
+            ]);
+
+        if (!accessToken && !dryRun) {
+          console.error("Failed to obtain access token from service-account.json");
+          process.exit(EXIT_CODES.CONFIGURATION);
+        }
+
+        await ensureRequiredApisEnabled(projectId, accessToken || "", dryRun);
+      }
+
+      if (installDeps) {
+        console.log("Installing project dependencies...");
+        run("npm", ["install"], EXIT_CODES.PREREQUISITES);
+      }
+
+      console.log("Writing .firebaserc default project...");
+      writeFirebaserc(cwd, projectId);
+
+      const replicateToDrive = getBooleanSetting(args, "replicate-to-drive", "INSTALLER_REPLICATE_TO_DRIVE", false);
+      const replicateStrict = getBooleanSetting(args, "replicate-strict", "INSTALLER_REPLICATE_STRICT", false);
+      const useOAuth = getBooleanSetting(args, "use-oauth", "INSTALLER_USE_OAUTH", false);
+      const shouldDeploy = getBooleanSetting(args, "deploy", "INSTALLER_DEPLOY", true);
+      const driveFolderId =
+        getStringSetting(args, "drive-folder-id", "INSTALLER_DRIVE_FOLDER_ID") ||
+        (typeof configFile.driveFolderId === "string" ? configFile.driveFolderId : "");
+      const driveClientId = getStringSetting(args, "drive-client-id", "INSTALLER_DRIVE_CLIENT_ID");
+      const driveClientSecret = getStringSetting(args, "drive-client-secret", "INSTALLER_DRIVE_CLIENT_SECRET");
+      const driveRefreshToken = getStringSetting(args, "drive-refresh-token", "INSTALLER_DRIVE_REFRESH_TOKEN");
+
+      const configArgs = [];
+      if (replicateToDrive) {
+        if (!driveFolderId) {
+          console.error("Managed mode requires drive folder id when replicate-to-drive is enabled.");
+          process.exit(EXIT_CODES.CONFIGURATION);
+        }
+
+        configArgs.push(`app.google_drive_folder_id=${quoteConfigValue(driveFolderId)}`);
+        configArgs.push("app.replicate_to_drive=true");
+        configArgs.push(`app.replicate_to_drive_strict=${replicateStrict ? "true" : "false"}`);
+
+        if (useOAuth) {
+          if (!driveClientId || !driveClientSecret || !driveRefreshToken) {
+            console.error("Managed mode with OAuth requires drive client id/secret/refresh token.");
+            process.exit(EXIT_CODES.CONFIGURATION);
+          }
+
+          configArgs.push(`app.google_drive_client_id=${quoteConfigValue(driveClientId)}`);
+          configArgs.push(`app.google_drive_client_secret=${quoteConfigValue(driveClientSecret)}`);
+          configArgs.push(`app.google_drive_refresh_token=${quoteConfigValue(driveRefreshToken)}`);
+        }
+      } else {
+        configArgs.push("app.replicate_to_drive=false");
+        configArgs.push("app.replicate_to_drive_strict=false");
+      }
+
+      console.log("Applying Firebase Functions runtime config...");
+      runFirebase(firebaseInfo, ["functions:config:set", ...configArgs, "--project", projectId], EXIT_CODES.CONFIGURATION, {
+        env: authEnv
+      });
+
+      if (shouldDeploy) {
+        console.log("Deploying functions...");
+        runFirebase(firebaseInfo, ["deploy", "--only", "functions", "--project", projectId], EXIT_CODES.DEPLOYMENT, {
+          env: authEnv
+        });
+      }
+
+      const baseUrl = `https://${region}-${projectId}.cloudfunctions.net/api`;
+      console.log(`\n${installerMode === "bootstrap" ? "Bootstrap" : "Managed"} setup completed successfully.`);
+      console.log(`Base URL: ${baseUrl}`);
+      console.log(`Health: ${baseUrl}/health`);
+      console.log(`Metadata endpoint: ${baseUrl}/sap/metadata`);
+      console.log(`Raw upload endpoint: ${baseUrl}/sap/content/raw`);
+
+      const endUserConfigPath =
+        exportConfigValue && exportConfigValue !== "true"
+          ? exportConfigValue
+          : exportConfigValue
+            ? "installer/end-user-config.json"
+            : "";
+
+      if (endUserConfigPath) {
+        writeJsonFile(endUserConfigPath, {
+          mode: "end-user",
+          projectId,
+          region,
+          baseUrl,
+          endpoints: {
+            health: `${baseUrl}/health`,
+            metadata: `${baseUrl}/sap/metadata`,
+            uploadRaw: `${baseUrl}/sap/content/raw`
+          },
+          generatedAt: new Date().toISOString()
+        });
+      }
+
+      if (outputJsonValue) {
+        writeJsonSummary(outputJsonValue, {
+          ok: true,
+          mode: installerMode,
+          projectId,
+          region,
+          baseUrl,
+          firebaseConfig,
+          endpoints: {
+            health: `${baseUrl}/health`,
+            metadata: `${baseUrl}/sap/metadata`,
+            uploadRaw: `${baseUrl}/sap/content/raw`
+          },
+          settings: {
+            replicateToDrive,
+            replicateStrict,
+            useOAuth,
+            deploy: shouldDeploy,
+            installDeps,
+            nonInteractive,
+            dryRun
+          },
+          generatedAt: new Date().toISOString()
+        });
+      }
+
+      await maybeWaitOnExit(waitOnExit);
       return;
     }
 
@@ -578,6 +1107,8 @@ async function main() {
         generatedAt: new Date().toISOString()
       });
     }
+
+    await maybeWaitOnExit(waitOnExit);
   } finally {
     rl.close();
   }

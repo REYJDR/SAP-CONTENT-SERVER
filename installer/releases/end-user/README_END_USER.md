@@ -1,34 +1,47 @@
-# End-User Package (No gcloud/firebase required)
+# End-User Package (Bootstrap Only)
 
-This package is for final users.
-No cloud CLI setup is required.
+This package is focused on one flow:
 
-## Windows
+- **Bootstrap (full setup + deploy Functions)**
 
-1. Open `windows/setup-wizard-win-x64.exe`
-2. Run in end-user mode with config file:
+## Prerequisites
 
-```bash
-setup-wizard-win-x64.exe --non-interactive --mode end-user --config-file end-user-config.json
-```
+- `end-user-config.json` must be in the same folder as the executable.
+- Internet access to reach the configured `baseUrl`.
+- Outbound HTTPS access to `https://*.cloudfunctions.net`.
+- For Windows: run `start-end-user-installer.bat` (recommended).
+- For macOS: allow execution if needed (`chmod +x setup-wizard-macos-arm64`).
 
-## macOS (Apple Silicon)
+## Bootstrap (recommended)
 
-1. Open `macos/setup-wizard-macos-arm64`
-2. If needed, allow execution:
+Use this when the user already has a Firebase project and wants the installer to deploy everything.
 
-```bash
-chmod +x setup-wizard-macos-arm64
-```
+Required files in OS folder:
 
-3. Run in end-user mode with config file:
+- executable (`setup-wizard-...`)
+- `firebase-config.json` (create from `firebase-config.template.json`)
+- `service-account.json`
 
-```bash
-./setup-wizard-macos-arm64 --non-interactive --mode end-user --config-file end-user-config.json
-```
+How to get `firebase-config.json`:
+
+- Firebase Console > Project Settings > Your apps > Web app config
+
+How to get `service-account.json`:
+
+- Firebase Console > Project Settings > Service accounts
+- Click `Generate new private key`
+
+### Windows
+
+1. Open `windows/start-bootstrap-installer.bat`
+
+### macOS (Apple Silicon)
+
+1. Open `macos/start-bootstrap-installer.command`
 
 ## Expected result
 
-- Installer validates `baseUrl` and `/api/health`
-- Returns `ok: true`
-- No `gcloud`/`firebase` prerequisites
+- Installer enables required APIs
+- Installer configures Firebase Functions runtime
+- Installer deploys Functions
+- Endpoints are printed at the end

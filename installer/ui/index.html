@@ -48,6 +48,8 @@
         color: #33415c;
       }
       input[type="text"],
+      textarea,
+      select,
       input[type="password"] {
         width: 100%;
         box-sizing: border-box;
@@ -56,10 +58,33 @@
         padding: 10px;
         font-size: 14px;
       }
+      textarea {
+        min-height: 120px;
+        resize: vertical;
+      }
       .check {
         display: flex;
         align-items: center;
         gap: 8px;
+      }
+      .mode-help {
+        margin-top: 6px;
+        font-size: 12px;
+        color: #5e6d8a;
+      }
+      .section-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #1f2a44;
+        margin: 8px 0 0;
+      }
+      .hidden {
+        display: none;
+      }
+      .error {
+        color: #b42318;
+        font-size: 13px;
+        margin-top: 8px;
       }
       button {
         border: 0;
@@ -109,7 +134,13 @@
         <div class="grid">
           <div>
             <label for="mode">Mode</label>
-            <input id="mode" type="text" value="admin" placeholder="admin or end-user" />
+            <select id="mode">
+              <option value="bootstrap" selected>bootstrap (recommended)</option>
+              <option value="managed">managed</option>
+              <option value="admin">admin</option>
+              <option value="end-user">end-user</option>
+            </select>
+            <div class="mode-help" id="modeHelp">Full setup + API enable + Functions deploy using firebase-config + service-account.</div>
           </div>
           <div>
             <label for="configFile">Config file path (optional)</label>
@@ -121,52 +152,62 @@
             <input id="baseUrl" type="text" placeholder="https://us-central1-<project>.cloudfunctions.net/api" />
           </div>
 
-          <div>
+          <div class="full bootstrap-managed-only">
+            <label for="firebaseConfig">Firebase config JSON (managed mode)</label>
+            <textarea id="firebaseConfig" placeholder='{"projectId":"sap-cs-middleware",...}'></textarea>
+          </div>
+
+          <div class="full bootstrap-managed-only">
+            <label for="serviceAccount">Service account JSON path (managed mode)</label>
+            <input id="serviceAccount" type="text" placeholder="/path/to/service-account.json" />
+          </div>
+
+          <div class="admin-only">
             <label for="project">Firebase project ID</label>
             <input id="project" type="text" placeholder="sap-content-server-ad957" />
           </div>
-          <div>
+          <div class="admin-bootstrap-managed-only">
             <label for="region">Functions region</label>
             <input id="region" type="text" value="us-central1" />
           </div>
 
-          <div class="check">
+          <div class="check admin-bootstrap-managed-only">
             <input id="installDeps" type="checkbox" checked />
             <label for="installDeps">Install dependencies first (npm install)</label>
           </div>
-          <div class="check">
+          <div class="check admin-bootstrap-managed-only">
             <input id="deploy" type="checkbox" checked />
             <label for="deploy">Deploy functions</label>
           </div>
 
-          <div class="check">
+          <div class="check admin-bootstrap-managed-only">
             <input id="replicateToDrive" type="checkbox" checked />
             <label for="replicateToDrive">Enable Drive replication</label>
           </div>
-          <div class="check">
+          <div class="check admin-bootstrap-managed-only">
             <input id="replicateStrict" type="checkbox" />
             <label for="replicateStrict">Strict replication</label>
           </div>
 
-          <div class="full">
+          <div class="full admin-bootstrap-managed-only">
             <label for="driveFolderId">Google Drive folder ID</label>
             <input id="driveFolderId" type="text" placeholder="Drive root folder id" />
           </div>
 
-          <div class="check full">
+          <div class="check full admin-bootstrap-managed-only">
             <input id="useOAuth" type="checkbox" />
             <label for="useOAuth">Use OAuth Drive credentials</label>
           </div>
 
-          <div>
+          <div class="admin-bootstrap-managed-only">
             <label for="driveClientId">Drive client ID</label>
             <input id="driveClientId" type="text" />
           </div>
-          <div>
+          <div class="admin-bootstrap-managed-only">
             <label for="driveClientSecret">Drive client secret</label>
             <input id="driveClientSecret" type="password" />
           </div>
-          <div class="full">
+          <div class="full admin-bootstrap-managed-only">
             <label for="driveRefreshToken">Drive refresh token</label>
             <input id="driveRefreshToken" type="password" />
           </div>
@@ -176,6 +217,8 @@
             <label for="dryRun">Dry-run (no cloud changes)</label>
           </div>
         </div>
+
+        <div class="error hidden" id="formError"></div>
 
         <div style="margin-top: 14px">
           <button id="runBtn">Run installer</button>
@@ -192,6 +235,9 @@
       const runBtn = document.getElementById("runBtn");
       const statusEl = document.getElementById("status");
       const outputEl = document.getElementById("output");
+      const modeEl = document.getElementById("mode");
+      const modeHelpEl = document.getElementById("modeHelp");
+      const formErrorEl = document.getElementById("formError");
 
       const getValue = (id) => document.getElementById(id).value;
       const getChecked = (id) => document.getElementById(id).checked;
@@ -204,11 +250,79 @@
         outputEl.textContent = text;
       }
 
+      function setFormError(text) {
+        if (!text) {
+          formErrorEl.textContent = "";
+          formErrorEl.classList.add("hidden");
+          return;
+        }
+        formErrorEl.textContent = text;
+        formErrorEl.classList.remove("hidden");
+      }
+
+      function toggleVisibility(selector, show) {
+        document.querySelectorAll(selector).forEach((el) => {
+          el.classList.toggle("hidden", !show);
+        });
+      }
+
+      function applyModeUi(mode) {
+        const isAdmin = mode === "admin";
+        const isManaged = mode === "managed";
+        const isBootstrap = mode === "bootstrap";
+        const isEndUser = mode === "end-user";
+
+        toggleVisibility(".admin-only", isAdmin);
+        toggleVisibility(".bootstrap-managed-only", isManaged || isBootstrap);
+        toggleVisibility(".admin-bootstrap-managed-only", isAdmin || isManaged || isBootstrap);
+
+        const help = isBootstrap
+          ? "Full setup + API enable + Functions deploy using firebase-config + service-account."
+          : isManaged
+            ? "Functions setup + deploy using firebase-config + service-account (without API bootstrap)."
+            : isAdmin
+              ? "Traditional technical setup using gcloud/firebase tooling."
+              : "Validation mode for an already deployed backend (no deploy).";
+        modeHelpEl.textContent = help;
+      }
+
+      function validatePayload(payload) {
+        const mode = String(payload.mode || "").trim();
+
+        if (mode === "bootstrap" || mode === "managed") {
+          if (!payload.serviceAccount.trim()) {
+            return "Service account JSON path is required for bootstrap/managed mode.";
+          }
+          if (!payload.firebaseConfig.trim()) {
+            return "Firebase config JSON is required for bootstrap/managed mode.";
+          }
+        }
+
+        if (mode === "end-user") {
+          if (!payload.baseUrl.trim() && !payload.configFile.trim()) {
+            return "For end-user mode, provide baseUrl or config file path.";
+          }
+        }
+
+        if (mode === "admin") {
+          if (!payload.project.trim()) {
+            return "Project is required in admin mode.";
+          }
+        }
+
+        return "";
+      }
+
+      modeEl.addEventListener("change", () => applyModeUi(modeEl.value));
+      applyModeUi(modeEl.value);
+
       runBtn.addEventListener("click", async () => {
         const payload = {
           mode: getValue("mode"),
           configFile: getValue("configFile"),
           baseUrl: getValue("baseUrl"),
+          firebaseConfig: getValue("firebaseConfig"),
+          serviceAccount: getValue("serviceAccount"),
           project: getValue("project"),
           region: getValue("region"),
           installDeps: getChecked("installDeps"),
@@ -222,6 +336,13 @@
           driveRefreshToken: getValue("driveRefreshToken"),
           dryRun: getChecked("dryRun")
         };
+
+        setFormError("");
+        const validationError = validatePayload(payload);
+        if (validationError) {
+          setFormError(validationError);
+          return;
+        }
 
         runBtn.disabled = true;
         setStatus("running");

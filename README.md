@@ -49,16 +49,60 @@ npm run bootstrap
 
 ### Recommended distribution model (admin + end-user)
 
-Use two modes to avoid technical setup for final users:
+Use these modes depending on who runs setup:
 
 - `admin` mode: technical owner runs provisioning (gcloud/firebase), deploys, and exports a config file.
+- `managed` mode: provide `firebaseConfig` + `service-account.json`; installer configures Firebase runtime and deploys functions (no `gcloud` required).
+- `bootstrap` mode: like managed, plus enables required Google APIs automatically via Service Usage API before deploy.
 - `end-user` mode: final user only validates connectivity using `baseUrl` or a provided config file (no `gcloud`/`firebase` required).
+
+Prerequisites by mode:
+
+- `admin`
+  - `node`, `npm`, `firebase`, `gcloud` installed and authenticated
+  - permissions to enable APIs and deploy Functions
+- `managed`
+  - `node` and `npm`
+  - `firebase-tools` available via `firebase` or `npx`
+  - `firebaseConfig` JSON (must include `projectId`)
+  - `service-account.json` with permissions to configure and deploy Functions
+- `end-user`
+  - installer executable + `end-user-config.json` in same folder
+  - internet access to `<project>.cloudfunctions.net`
 
 Admin example (export config for users):
 
 ```bash
 npm run installer:run -- --mode admin --project <project-id> --region us-central1 --export-config installer/end-user-config.json
 ```
+
+Managed example (firebaseConfig + service account):
+
+```bash
+npm run installer:run -- \
+  --mode managed \
+  --firebase-config ./installer/firebase-config.json \
+  --service-account ./installer/service-account.json \
+  --drive-folder-id <drive-folder-id> \
+  --replicate-to-drive true \
+  --deploy true \
+  --export-config installer/end-user-config.json
+```
+
+Bootstrap example (end-to-end from existing Firebase project):
+
+```bash
+npm run installer:run -- \
+  --mode bootstrap \
+  --firebase-config ./installer/firebase-config.json \
+  --service-account ./installer/service-account.json \
+  --drive-folder-id <drive-folder-id> \
+  --replicate-to-drive true \
+  --deploy true \
+  --export-config installer/end-user-config.json
+```
+
+Security note: never commit `service-account.json` to Git.
 
 End-user example (no cloud CLIs required):
 
@@ -132,44 +176,12 @@ http://127.0.0.1:5055
 
 The UI runs the same installer with your selected options and shows stdout/stderr output, exit code, and completion status.
 
-### Native desktop app (recommended for non-technical users)
-
-Run desktop app in development mode:
-
-```bash
-npm run installer:desktop:dev
-```
-
-Build distributable desktop installers:
-
-```bash
-# Run on macOS to produce macOS installers
-npm run installer:desktop:build:mac
-
-# Run on Windows to produce Windows installers
-npm run installer:desktop:build:win
-```
-
-Desktop app artifacts are generated in:
-
-- `installer/releases/windows` (`.exe`)
-- `installer/releases/macos` (`.dmg`)
-
-This app opens the installer UI directly in a native window and guides users through setup/deployment.
-
 Program initiator wrappers (double-click):
 
 - Windows: `installer/os/windows/start-installer-ui.bat`
 - macOS: `installer/os/macos/start-installer-ui.command`
 
 Both wrappers start the local UI server and open `http://127.0.0.1:5055` automatically.
-
-Desktop shortcut creators (one-click setup):
-
-- Windows: `installer/os/windows/create-desktop-shortcut.bat`
-- macOS: `installer/os/macos/create-desktop-shortcut.command`
-
-These create a Desktop shortcut to launch the Installer UI wrapper.
 
 Non-interactive mode (CI/automation):
 
