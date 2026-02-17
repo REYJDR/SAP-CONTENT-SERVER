@@ -7,4 +7,6 @@ yarn-error.log*
 pnpm-debug.log*
 installer/dist
 installer/desktop-dist
-installer/releases
+installer/releases/*
+!installer/releases/end-user/
+!installer/releases/end-user/**
