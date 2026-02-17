@@ -1,5 +1,11 @@
 # SAP Content Server (Firebase + Google Storage/Drive)
 
+## Support / Donations
+
+If this project helps your team and you want to support ongoing improvements, you can donate here:
+
+- PayPal: [https://paypal.me/reinaldodaou?locale.x=es_XC&country.x=MX](https://paypal.me/reinaldodaou?locale.x=es_XC&country.x=MX)
+
 MVP content service designed for SAP integrations.
 
 It stores document metadata in Firestore and file binaries in one of these backends:
@@ -503,3 +509,11 @@ After deploy, set runtime env vars in Cloud Run service:
 - `FIREBASE_STORAGE_BUCKET=sap-content-server-ad957.firebasestorage.app`
 
 For production, attach a service account with Firestore + Storage permissions.
+
+## Contributing
+
+Contributions, issues, and feedback are welcome.
+
+If you want to support ongoing maintenance and improvements, you can donate via PayPal:
+
+- [https://paypal.me/reinaldodaou?locale.x=es_XC&country.x=MX](https://paypal.me/reinaldodaou?locale.x=es_XC&country.x=MX)
