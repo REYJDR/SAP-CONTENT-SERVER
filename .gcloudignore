@@ -1,0 +1,8 @@
+.gcloudignore
+.git
+.gitignore
+node_modules
+.env
+dist
+npm-debug.log*
+@02@	Change not possible; object does not exist	/SCMTMS/TOR	DOCUMENT	35C9D565D3D81FE182D123643F330016	@2X@	@16@

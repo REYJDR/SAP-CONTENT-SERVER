@@ -1,0 +1,78 @@
+{
+  "name": "sap-content-server",
+  "version": "1.0.0",
+  "main": "dist/firebaseFunction.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "bootstrap": "tsx scripts/bootstrap.ts",
+    "installer:run": "node installer/setup-wizard.js",
+    "installer:start": "node installer/start-here.js",
+    "installer:ui": "node installer/ui-server.js",
+    "installer:desktop:dev": "electron installer/desktop/main.js",
+    "installer:desktop:build:mac": "electron-builder --mac dmg --publish never --config.directories.output=installer/releases/macos",
+    "installer:desktop:build:win": "electron-builder --win nsis --publish never --config.directories.output=installer/releases/windows",
+    "installer:build": "pkg installer/setup-wizard.js --targets node18-win-x64,node18-macos-x64,node18-macos-arm64 --out-path installer/dist",
+    "verify:deployed": "tsx scripts/verify-deployed.ts",
+    "deploy:cloudrun": "gcloud run deploy sap-content-server --source . --region us-central1 --allow-unauthenticated",
+    "deploy:firebase": "sh -c 'moved=0; if [ -f .env ]; then mv .env .env.local && moved=1; fi; firebase deploy --only functions; code=$?; if [ \"$moved\" -eq 1 ]; then mv .env.local .env; fi; exit $code'",
+    "drive:token": "tsx scripts/generate-drive-refresh-token.ts",
+    "test": "echo \"No tests configured\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@types/busboy": "^1.5.4",
+    "busboy": "^1.6.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "firebase-admin": "^13.6.1",
+    "firebase-functions": "^7.0.5",
+    "googleapis": "^171.4.0",
+    "helmet": "^8.1.0",
+    "morgan": "^1.10.1",
+    "multer": "^2.0.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/morgan": "^1.9.10",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.2.3",
+    "electron": "^36.3.0",
+    "electron-builder": "^24.13.3",
+    "pkg": "^5.8.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "build": {
+    "appId": "com.sapcontentserver.installer",
+    "productName": "SAP Content Server Installer",
+    "files": [
+      "installer/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "installer/desktop/main.js"
+    },
+    "directories": {
+      "output": "installer/releases/shared"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
+  }
+}
