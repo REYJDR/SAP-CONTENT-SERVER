@@ -1,8 +1,9 @@
+import { createReadStream } from "fs";
 import { Readable } from "stream";
 import { env } from "../config/env";
 import { getDocument } from "../repository/documentRepository";
 import { buildDriveClient } from "../services/driveAuth";
-import { PutDocumentInput, PutDocumentResult } from "../types";
+import { PutDocumentFileInput, PutDocumentInput, PutDocumentResult } from "../types";
 import { StorageAdapter } from "./StorageAdapter";
 
 export class DriveAdapter implements StorageAdapter {
@@ -35,6 +36,36 @@ export class DriveAdapter implements StorageAdapter {
     return {
       driveFileId,
       size: input.bytes.length
+    };
+  }
+
+  async putFromFile(input: PutDocumentFileInput): Promise<PutDocumentResult> {
+    if (!env.GOOGLE_DRIVE_FOLDER_ID) {
+      throw new Error("GOOGLE_DRIVE_FOLDER_ID is required for drive backend");
+    }
+
+    const response = await this.drive.files.create({
+      requestBody: {
+        name: `${input.documentId}__${input.fileName}`,
+        mimeType: input.contentType,
+        parents: [env.GOOGLE_DRIVE_FOLDER_ID]
+      },
+      media: {
+        mimeType: input.contentType,
+        body: createReadStream(input.filePath)
+      },
+      fields: "id",
+      supportsAllDrives: true
+    });
+
+    const driveFileId = response.data.id;
+    if (!driveFileId) {
+      throw new Error("Failed to create file on Google Drive");
+    }
+
+    return {
+      driveFileId,
+      size: input.size
     };
   }
 

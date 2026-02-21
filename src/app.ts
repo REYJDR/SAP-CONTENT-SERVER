@@ -103,7 +103,36 @@ app.use((req, _res, next) => {
 app.use(contentRoutes);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const message = err instanceof Error ? err.message : String(err);
+  const statusCode = (() => {
+    if (typeof err === "object" && err !== null) {
+      const candidate = err as { statusCode?: number; status?: number };
+      if (typeof candidate.statusCode === "number") {
+        return candidate.statusCode;
+      }
+      if (typeof candidate.status === "number") {
+        return candidate.status;
+      }
+    }
+    return 0;
+  })();
+  const isPayloadTooLarge =
+    /payload too large/i.test(message) ||
+    /exceeds limit/i.test(message) ||
+    /request entity too large/i.test(message);
+
+  if (statusCode >= 400 && statusCode < 500) {
+    console.log(`[request-error:${statusCode}] ${message || "bad request"}`);
+    return res.status(statusCode).json({ error: message || "bad request" });
+  }
+
+  if (isPayloadTooLarge) {
+    console.log(`[request-error:413] ${message || "payload too large"}`);
+    return res.status(413).json({ error: message || "payload too large" });
+  }
+
   console.error(err);
+
   return res.status(500).json({ error: "internal server error" });
 });
 

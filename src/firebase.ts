@@ -2,7 +2,7 @@ import admin from "firebase-admin";
 import { env } from "./config/env";
 
 const runtimeProjectId = env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT;
-const runtimeStorageBucket = env.FIREBASE_STORAGE_BUCKET || (runtimeProjectId ? `${runtimeProjectId}.firebasestorage.app` : undefined);
+const runtimeStorageBucket = env.STORAGE_BUCKET || env.FIREBASE_STORAGE_BUCKET || (runtimeProjectId ? `${runtimeProjectId}.firebasestorage.app` : undefined);
 
 const hasInlineServiceAccount =
   Boolean(env.FIREBASE_PROJECT_ID) &&

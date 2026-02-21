@@ -1,6 +1,6 @@
-# Quick Start for Ops (10 Commands)
+# Quick Start for Ops (Core Backend)
 
-This is the fastest path to bootstrap and verify SAP Content Server in a new Firebase project.
+This is the fastest path to build, deploy, and verify the SAP Content Server backend.
 
 ## Prerequisites
 
@@ -9,7 +9,7 @@ This is the fastest path to bootstrap and verify SAP Content Server in a new Fir
 - Google Cloud CLI (`gcloud`)
 - Access to target Firebase/GCP project
 
-## 10-command rollout
+## 8-command rollout
 
 1. Install dependencies
 
@@ -23,71 +23,41 @@ npm install
 npm run build
 ```
 
-3. Build native installers
-
-```bash
-npm run installer:build
-```
-
-4. Authenticate Firebase
+3. Authenticate Firebase
 
 ```bash
 firebase login
 ```
 
-5. Authenticate GCP
+4. Authenticate GCP
 
 ```bash
 gcloud auth login
 ```
 
-6. Run installer (interactive)
+5. Deploy Functions
 
 ```bash
-npm run installer:run
+npm run deploy:firebase
 ```
 
-Optional: run browser-based local UI installer
-
-```bash
-npm run installer:ui
-```
-
-7. Verify deployed API behavior
+6. Verify deployed API behavior
 
 ```bash
 npm run verify:deployed
 ```
 
-8. Optional CI-style dry-run check
+7. Optional explicit project/region verify
 
 ```bash
-node installer/setup-wizard.js --non-interactive --dry-run --project <project-id> --output-json
+npm run verify:deployed -- --project <project-id> --region us-central1
 ```
 
-9. Generate release artifacts list
-
-```bash
-ls -la installer/dist
-```
-
-10. Capture deployment summary for handoff
+8. Capture deployment summary for handoff
 
 ```bash
 cat RELEASE_NOTES.md
 ```
-
-## If you prefer native executable installer
-
-- Windows: `.exe` from `installer/releases/windows`
-- macOS: `.dmg` from `installer/releases/macos`
-
-OS helper launchers (internal/admin use):
-
-- `installer/os/windows/*`
-- `installer/os/macos/*`
-
-Run from repository root so `.firebaserc` and npm scripts are available.
 
 ## Smoke test endpoints (post-deploy)
 
@@ -105,4 +75,3 @@ And call paths:
 
 - `/api/sap/metadata`
 - `/api/sap/content/raw`
-ZENH_FU_OUTPUT

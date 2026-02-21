@@ -1,0 +1,17 @@
+﻿[2026-02-20 08:29:35Z] Queued deployment run c86cb136e57046e3a82d7b8615021604
+[2026-02-20 08:29:35Z] Worker job started. JobId=1 State=Running
+[2026-02-20 08:29:35Z] Worker script: C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-worker.ps1
+[2026-02-20 08:29:37Z] Deployment worker started.
+[2026-02-20 08:29:37Z] Input: projectId=sap-middleware-zytm-c02f5 region=us-central1 memoryMb=512 timeoutSeconds=120
+[2026-02-20 08:29:37Z] Input: serviceAccountPath=C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\sap-middleware-zytm-c02f5-firebase-adminsdk-fbsvc-97641a4563.json
+[2026-02-20 08:29:37Z] Input: functionSourcePath=C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\function-source
+[2026-02-20 08:29:37Z] Loading service account
+[2026-02-20 08:29:37Z] Getting OAuth token
+[2026-02-20 08:29:39Z] Resolving project number
+[2026-02-20 08:29:39Z] Enabling required APIs
+[2026-02-20 08:29:41Z] ERROR: Error en el servidor remoto: (400) Solicitud incorrecta.
+[2026-02-20 08:29:41Z] STACK: en Invoke-GoogleApi, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-core.ps1: línea 115
+en Wait-Operation, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-core.ps1: línea 137
+en Invoke-FunctionDeployment, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-core.ps1: línea 204
+en <ScriptBlock>, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-worker.ps1: línea 58
+en <ScriptBlock>, <sin archivo>: línea 4

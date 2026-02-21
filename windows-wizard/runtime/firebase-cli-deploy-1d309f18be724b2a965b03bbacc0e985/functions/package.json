@@ -1,0 +1,23 @@
+{
+  "name": "sap-content-server-functions",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/firebaseFunction.js",
+  "engines": {
+    "node": "22"
+  },
+  "dependencies": {
+    "@types/busboy": "^1.5.4",
+    "busboy": "^1.6.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "firebase-admin": "^13.6.1",
+    "firebase-functions": "^7.0.5",
+    "googleapis": "^171.4.0",
+    "helmet": "^8.1.0",
+    "morgan": "^1.10.1",
+    "multer": "^2.0.2",
+    "zod": "^4.3.6"
+  }
+}

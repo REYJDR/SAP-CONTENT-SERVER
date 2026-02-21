@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SAP Deploy Wizard (Local)</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f6fb; margin: 0; }
+    .wrap { max-width: 900px; margin: 20px auto; padding: 16px; }
+    .card { background: #fff; border: 1px solid #d9deea; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .full { grid-column: 1 / -1; }
+    input, select { width: 100%; box-sizing: border-box; border: 1px solid #c6cede; border-radius: 7px; padding: 9px; }
+    button { background: #1d4ed8; color: #fff; border: 0; border-radius: 7px; padding: 10px 14px; cursor: pointer; }
+    pre { background: #111827; color: #d1fae5; border-radius: 8px; padding: 12px; min-height: 220px; overflow: auto; white-space: pre-wrap; }
+    .status { font-weight: 600; margin-bottom: 8px; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>SAP Content Server Deploy Wizard</h1>
+      <div>Local UI frontend for deployment with Firebase CLI.</div>
+      <div style="margin-top:6px;color:#4b5563;font-size:13px;">Emulated bootstrap mode: if fields are empty, it will try local <b>firebase-config.json</b> and <b>service-account.json</b> in the windows-wizard folder.</div>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          <label>Project ID</label>
+          <input id="projectId" placeholder="sap-middleware-xxxx (optional if firebase-config.json exists)" />
+        </div>
+        <div>
+          <label>Region</label>
+          <input id="region" value="us-central1" />
+        </div>
+        <div class="full">
+          <label>Firebase Config JSON (optional, used to infer projectId)</label>
+          <input id="firebaseConfig" placeholder='{"projectId":"sap-middleware-xxxx"} (optional)' />
+        </div>
+        <div class="full">
+          <label>Service Account JSON Path (on this machine)</label>
+          <input id="serviceAccountPath" placeholder="C:\\deploy\\service-account.json (optional if local service-account.json exists)" />
+        </div>
+        <div>
+          <label>Memory MB</label>
+          <input id="memoryMb" value="512" />
+        </div>
+        <div>
+          <label>Timeout Seconds</label>
+          <input id="timeoutSeconds" value="120" />
+        </div>
+        <div class="full" style="margin-top:4px;font-weight:600;">Runtime .env configuration</div>
+        <div>
+          <label>STORAGE_BACKEND</label>
+          <select id="storageBackend">
+            <option value="gcs" selected>gcs</option>
+            <option value="drive">drive</option>
+          </select>
+        </div>
+        <div>
+          <label>STORAGE_BUCKET (required for gcs)</label>
+          <input id="firebaseStorageBucket" placeholder="your-project-id.firebasestorage.app" />
+        </div>
+        <div>
+          <label>REPLICATE_TO_DRIVE</label>
+          <select id="replicateToDrive">
+            <option value="false" selected>false</option>
+            <option value="true">true</option>
+          </select>
+        </div>
+        <div>
+          <label>REPLICATE_TO_DRIVE_STRICT</label>
+          <select id="replicateToDriveStrict">
+            <option value="false" selected>false</option>
+            <option value="true">true</option>
+          </select>
+        </div>
+        <div>
+          <label>GOOGLE_DRIVE_FOLDER_ID (required for drive/replication)</label>
+          <input id="googleDriveFolderId" placeholder="Drive folder id" />
+        </div>
+        <div>
+          <label>GOOGLE_DRIVE_CLIENT_ID (required for drive/replication)</label>
+          <input id="googleDriveClientId" placeholder="OAuth2 client id" />
+        </div>
+        <div>
+          <label>GOOGLE_DRIVE_CLIENT_SECRET (required for drive/replication)</label>
+          <input id="googleDriveClientSecret" placeholder="OAuth2 client secret" />
+        </div>
+        <div>
+          <label>GOOGLE_DRIVE_REFRESH_TOKEN (required for drive/replication)</label>
+          <input id="googleDriveRefreshToken" placeholder="OAuth2 refresh token" />
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <button id="runBtn">Run Installer</button>
+        <button id="savePresetBtn" type="button" style="margin-left:8px;background:#475569;">Export Preset JSON</button>
+        <button id="loadPresetBtn" type="button" style="margin-left:8px;background:#334155;">Import Preset JSON</button>
+        <input id="presetFileInput" type="file" accept="application/json" style="display:none;" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="status" id="status">Status: idle</div>
+      <pre id="logs"></pre>
+    </div>
+  </div>
+
+  <script>
+    const runBtn = document.getElementById('runBtn');
+    const savePresetBtn = document.getElementById('savePresetBtn');
+    const loadPresetBtn = document.getElementById('loadPresetBtn');
+    const presetFileInput = document.getElementById('presetFileInput');
+    const logs = document.getElementById('logs');
+    const statusEl = document.getElementById('status');
+    const API_BASE_CANDIDATES = [
+      '',
+      'http://127.0.0.1:5065',
+      'http://127.0.0.1:5066',
+      'http://127.0.0.1:5067',
+      'http://127.0.0.1:5075',
+      'http://127.0.0.1:5055'
+    ];
+    let resolvedApiBase = null;
+
+    function prettyBase(base) {
+      return base || window.location.origin || '(same-origin)';
+    }
+
+    async function resolveApiBase(force = false) {
+      if (!force && resolvedApiBase !== null) {
+        return resolvedApiBase;
+      }
+
+      for (const base of API_BASE_CANDIDATES) {
+        const healthUrl = base + '/api/health?_ts=' + Date.now();
+        try {
+          const res = await fetch(healthUrl, { cache: 'no-store' });
+          if (!res.ok) {
+            continue;
+          }
+          const json = await res.json().catch(() => ({}));
+          if (json && json.ok === true) {
+            resolvedApiBase = base;
+            return resolvedApiBase;
+          }
+        } catch {
+        }
+      }
+
+      throw new Error(
+        'Wizard backend not reachable. Tried: ' + API_BASE_CANDIDATES.map(prettyBase).join(', ')
+      );
+    }
+
+    async function apiUrl(path) {
+      const base = await resolveApiBase();
+      return base + path;
+    }
+
+    function setStatus(text) { statusEl.textContent = 'Status: ' + text; }
+
+    function appendOutputChunk(text) {
+      logs.textContent += text;
+    }
+
+    function getElementValue(id, fallback = '') {
+      const element = document.getElementById(id);
+      if (!element || typeof element.value !== 'string') {
+        return fallback;
+      }
+      return element.value.trim() || fallback;
+    }
+
+    function setElementValue(id, value) {
+      const element = document.getElementById(id);
+      if (!element || typeof element.value !== 'string') {
+        return;
+      }
+      element.value = value;
+    }
+
+    function currentFormPayload() {
+      return {
+        projectId: getElementValue('projectId'),
+        firebaseConfig: getElementValue('firebaseConfig'),
+        region: getElementValue('region', 'us-central1'),
+        serviceAccountPath: getElementValue('serviceAccountPath'),
+        memoryMb: getElementValue('memoryMb', '1024'),
+        timeoutSeconds: getElementValue('timeoutSeconds', '120'),
+        env: currentEnvPayload()
+      };
+    }
+
+    function applyPreset(data) {
+      const env = data.env || {};
+
+      setElementValue('projectId', data.projectId || '');
+      setElementValue('firebaseConfig', data.firebaseConfig || '');
+      setElementValue('region', data.region || 'us-central1');
+      setElementValue('serviceAccountPath', data.serviceAccountPath || '');
+      setElementValue('memoryMb', data.memoryMb || '1024');
+      setElementValue('timeoutSeconds', data.timeoutSeconds || '120');
+
+      setElementValue('storageBackend', env.STORAGE_BACKEND || 'gcs');
+      setElementValue('firebaseStorageBucket', env.STORAGE_BUCKET || env.FIREBASE_STORAGE_BUCKET || '');
+      setElementValue('replicateToDrive', String(env.REPLICATE_TO_DRIVE || 'false'));
+      setElementValue('replicateToDriveStrict', String(env.REPLICATE_TO_DRIVE_STRICT || 'false'));
+      setElementValue('googleDriveFolderId', env.GOOGLE_DRIVE_FOLDER_ID || '');
+      setElementValue('googleDriveClientId', env.GOOGLE_DRIVE_CLIENT_ID || '');
+      setElementValue('googleDriveClientSecret', env.GOOGLE_DRIVE_CLIENT_SECRET || '');
+      setElementValue('googleDriveRefreshToken', env.GOOGLE_DRIVE_REFRESH_TOKEN || '');
+    }
+
+    function currentEnvPayload() {
+      return {
+        STORAGE_BACKEND: getElementValue('storageBackend', 'gcs'),
+        STORAGE_BUCKET: getElementValue('firebaseStorageBucket'),
+        REPLICATE_TO_DRIVE: getElementValue('replicateToDrive', 'false'),
+        REPLICATE_TO_DRIVE_STRICT: getElementValue('replicateToDriveStrict', 'false'),
+        GOOGLE_DRIVE_FOLDER_ID: getElementValue('googleDriveFolderId'),
+        GOOGLE_DRIVE_CLIENT_ID: getElementValue('googleDriveClientId'),
+        GOOGLE_DRIVE_CLIENT_SECRET: getElementValue('googleDriveClientSecret'),
+        GOOGLE_DRIVE_REFRESH_TOKEN: getElementValue('googleDriveRefreshToken')
+      };
+    }
+
+    function validateEnvBeforeDeploy(projectId, env) {
+      const backend = (env.STORAGE_BACKEND || 'gcs').toLowerCase();
+      const replicate = String(env.REPLICATE_TO_DRIVE || 'false').toLowerCase() === 'true';
+      const needsDrive = backend === 'drive' || replicate;
+      const missing = [];
+
+      if (backend !== 'gcs' && backend !== 'drive') {
+        missing.push('STORAGE_BACKEND must be gcs or drive');
+      }
+
+      if (backend === 'gcs' && !env.STORAGE_BUCKET) {
+        if (projectId) {
+          env.STORAGE_BUCKET = projectId + '.firebasestorage.app';
+          setElementValue('firebaseStorageBucket', env.STORAGE_BUCKET);
+        } else {
+          missing.push('STORAGE_BUCKET');
+        }
+      }
+
+      if (needsDrive) {
+        for (const key of [
+          'GOOGLE_DRIVE_FOLDER_ID'
+        ]) {
+          if (!env[key]) missing.push(key);
+        }
+      }
+
+      return missing;
+    }
+
+    function normalizeChunk(chunk) {
+      if (typeof chunk === 'string') return chunk;
+      if (chunk == null) return '';
+      try {
+        return JSON.stringify(chunk, null, 2) + '\n';
+      } catch {
+        return String(chunk) + '\n';
+      }
+    }
+
+    runBtn.addEventListener('click', async () => {
+      logs.textContent = '';
+      setStatus('starting');
+      runBtn.disabled = true;
+
+      const payload = {
+        mode: 'bootstrap',
+        ...currentFormPayload(),
+        serviceAccount: getElementValue('serviceAccountPath')
+      };
+
+      const missingEnv = validateEnvBeforeDeploy(payload.projectId, payload.env);
+      if (missingEnv.length) {
+        setStatus('failed');
+        appendOutputChunk('Missing required .env values:\n- ' + missingEnv.join('\n- ') + '\n');
+        runBtn.disabled = false;
+        return;
+      }
+
+      try {
+        await resolveApiBase(true);
+        const streamUrl = await apiUrl('/api/run-stream');
+        const res = await fetch(streamUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          cache: 'no-store'
+        });
+
+        if (!res.ok || !res.body) {
+          throw new Error('Request failed with status ' + res.status);
+        }
+
+        setStatus('running');
+        appendOutputChunk('Running installer...\n');
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let sawDone = false;
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line) continue;
+
+            let event;
+            try {
+              event = JSON.parse(line);
+            } catch {
+              continue;
+            }
+
+            if (event.type === 'stdout' || event.type === 'stderr') {
+              appendOutputChunk(normalizeChunk(event.chunk));
+              continue;
+            }
+
+            if (event.type === 'meta') {
+              appendOutputChunk('\n$ ' + (event.command || '') + ' ' + ((event.args || []).join(' ')) + '\n\n');
+              continue;
+            }
+
+            if (event.type === 'done') {
+              sawDone = true;
+              setStatus(event.ok ? 'completed' : 'failed');
+              appendOutputChunk('\n\nFinished (exitCode=' + event.exitCode + ')\n');
+            }
+          }
+        }
+
+        if (!sawDone) {
+          setStatus('failed');
+          appendOutputChunk('\n\nInstaller did not report completion.\n');
+        }
+      } catch (e) {
+        const msg = (e && e.message) ? e.message : String(e);
+        logs.textContent = '[Deploy exception]\n' + msg;
+        setStatus('failed - ' + msg);
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+
+    savePresetBtn.addEventListener('click', () => {
+      const preset = currentFormPayload();
+      const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'sap-deploy-wizard-preset.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus('preset exported');
+    });
+
+    loadPresetBtn.addEventListener('click', () => {
+      presetFileInput.value = '';
+      presetFileInput.click();
+    });
+
+    presetFileInput.addEventListener('change', async (event) => {
+      const file = event.target && event.target.files ? event.target.files[0] : null;
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        applyPreset(data || {});
+        setStatus('preset imported');
+        appendOutputChunk('Preset imported from ' + file.name + '\n');
+      } catch (error) {
+        const msg = error && error.message ? error.message : String(error);
+        setStatus('failed - invalid preset');
+        appendOutputChunk('Failed to import preset: ' + msg + '\n');
+      }
+    });
+  </script>
+</body>
+</html>

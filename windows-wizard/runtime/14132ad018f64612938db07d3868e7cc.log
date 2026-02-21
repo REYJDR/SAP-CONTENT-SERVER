@@ -1,0 +1,5 @@
+﻿[2026-02-20 06:51:08Z] Queued deployment run 14132ad018f64612938db07d3868e7cc
+[2026-02-20 06:51:10Z] Deployment worker started.
+[2026-02-20 06:51:10Z] Loading service account
+[2026-02-20 06:51:10Z] Getting OAuth token
+[2026-02-20 06:51:10Z] ERROR: Error en la invocación del método porque [System.Security.Cryptography.RSACryptoServiceProvider] no contiene ningún método llamado 'ImportPkcs8PrivateKey'.

@@ -1,8 +1,17 @@
 import { storage } from "../firebase";
 import { AttachmentBusinessMetadata } from "../types";
+import { createReadStream } from "fs";
+import { pipeline } from "stream/promises";
 
 export interface FirebaseStoredFile {
   bytes: Buffer;
+  contentType: string;
+  fileName: string;
+}
+
+export interface FirebaseStoredObjectInfo {
+  storagePath: string;
+  size: number;
   contentType: string;
   fileName: string;
 }
@@ -43,6 +52,36 @@ export class FirebaseStorageService {
     return matched?.name || null;
   }
 
+  async createResumableUploadSession(
+    documentId: string,
+    fileName: string,
+    contentType: string,
+    sourceFolder?: string,
+    expiresInMinutes = 15
+  ): Promise<{ uploadUrl: string; storagePath: string; expiresAt: string }> {
+    const bucket = storage.bucket();
+    const storagePath = this.buildPath(documentId, sourceFolder);
+    const file = bucket.file(storagePath);
+    const expiresAt = new Date(Date.now() + Math.max(1, expiresInMinutes) * 60 * 1000);
+
+    const [uploadUrl] = await file.createResumableUpload({
+      metadata: {
+        contentType,
+        metadata: {
+          fileName,
+          documentId,
+          attachmentSource: sourceFolder || ""
+        }
+      }
+    });
+
+    return {
+      uploadUrl,
+      storagePath,
+      expiresAt: expiresAt.toISOString()
+    };
+  }
+
   async upload(
     documentId: string,
     fileName: string,
@@ -64,6 +103,35 @@ export class FirebaseStorageService {
         }
       }
     });
+
+    return storagePath;
+  }
+
+  async uploadFromFile(
+    documentId: string,
+    fileName: string,
+    filePath: string,
+    contentType: string,
+    sourceFolder?: string
+  ): Promise<string> {
+    const bucket = storage.bucket();
+    const storagePath = this.buildPath(documentId, sourceFolder);
+    const file = bucket.file(storagePath);
+
+    await pipeline(
+      createReadStream(filePath),
+      file.createWriteStream({
+        resumable: false,
+        metadata: {
+          contentType,
+          metadata: {
+            fileName,
+            documentId,
+            attachmentSource: sourceFolder || ""
+          }
+        }
+      })
+    );
 
     return storagePath;
   }
@@ -129,6 +197,35 @@ export class FirebaseStorageService {
     }
 
     await this.remove(storagePath);
+  }
+
+  async getStoredObjectInfoByDocumentId(documentId: string): Promise<FirebaseStoredObjectInfo | null> {
+    const storagePath = await this.resolvePathByDocumentId(documentId);
+    if (!storagePath) {
+      return null;
+    }
+
+    const bucket = storage.bucket();
+    const file = bucket.file(storagePath);
+    const [exists] = await file.exists();
+    if (!exists) {
+      return null;
+    }
+
+    const [metadata] = await file.getMetadata();
+    const fileNameMeta = metadata.metadata?.fileName;
+    const documentIdMeta = metadata.metadata?.documentId;
+    const resolvedDocumentId =
+      typeof documentIdMeta === "string" && documentIdMeta.length > 0
+        ? documentIdMeta
+        : storagePath.split("/").pop() || documentId;
+
+    return {
+      storagePath,
+      size: Number.parseInt(String(metadata.size ?? "0"), 10) || 0,
+      contentType: metadata.contentType || "application/octet-stream",
+      fileName: typeof fileNameMeta === "string" && fileNameMeta.length > 0 ? fileNameMeta : `${resolvedDocumentId}.bin`
+    };
   }
 
   async upsertDocumentMetadata(

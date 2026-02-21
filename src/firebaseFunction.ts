@@ -3,5 +3,5 @@ import { app } from "./app";
 
 export const api = functions
   .region("us-central1")
-  .runWith({ timeoutSeconds: 120, memory: "512MB" })
+  .runWith({ timeoutSeconds: 120, memory: "4GB" })
   .https.onRequest(app);

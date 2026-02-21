@@ -16,16 +16,6 @@ Optional mode: keep `gcs` as primary and replicate each uploaded file to Google 
 
 For operations handoff and first-time rollout, see [QUICK_START_OPS.md](QUICK_START_OPS.md).
 
-For non-technical users, distribute only these start files:
-
-- Windows: `.exe` from `installer/releases/windows`
-- macOS: `.dmg` from `installer/releases/macos`
-
-All helper launchers/scripts are now organized by OS under:
-
-- `installer/os/windows`
-- `installer/os/macos`
-
 ## 1) Setup
 
 1. Copy `.env.example` to `.env` and fill values.
@@ -39,220 +29,21 @@ All helper launchers/scripts are now organized by OS under:
 npm install
 ```
 
-### Guided installer (Windows + macOS)
-
-After creating your Firebase project, run the interactive bootstrap installer:
-
-```bash
-npm run bootstrap
-```
-
-### Recommended distribution model (admin + end-user)
-
-Use these modes depending on who runs setup:
-
-- `admin` mode: technical owner runs provisioning (gcloud/firebase), deploys, and exports a config file.
-- `managed` mode: provide `firebaseConfig` + `service-account.json`; installer configures Firebase runtime and deploys functions (no `gcloud` required).
-- `bootstrap` mode: like managed, plus enables required Google APIs automatically via Service Usage API before deploy.
-- `end-user` mode: final user only validates connectivity using `baseUrl` or a provided config file (no `gcloud`/`firebase` required).
-
-Prerequisites by mode:
-
-- `admin`
-  - `node`, `npm`, `firebase`, `gcloud` installed and authenticated
-  - permissions to enable APIs and deploy Functions
-- `managed`
-  - `node` and `npm`
-  - `firebase-tools` available via `firebase` or `npx`
-  - `firebaseConfig` JSON (must include `projectId`)
-  - `service-account.json` with permissions to configure and deploy Functions
-- `end-user`
-  - installer executable + `end-user-config.json` in same folder
-  - internet access to `<project>.cloudfunctions.net`
-
-Admin example (export config for users):
-
-```bash
-npm run installer:run -- --mode admin --project <project-id> --region us-central1 --export-config installer/end-user-config.json
-```
-
-Managed example (firebaseConfig + service account):
-
-```bash
-npm run installer:run -- \
-  --mode managed \
-  --firebase-config ./installer/firebase-config.json \
-  --service-account ./installer/service-account.json \
-  --drive-folder-id <drive-folder-id> \
-  --replicate-to-drive true \
-  --deploy true \
-  --export-config installer/end-user-config.json
-```
-
-Bootstrap example (end-to-end from existing Firebase project):
-
-```bash
-npm run installer:run -- \
-  --mode bootstrap \
-  --firebase-config ./installer/firebase-config.json \
-  --service-account ./installer/service-account.json \
-  --drive-folder-id <drive-folder-id> \
-  --replicate-to-drive true \
-  --deploy true \
-  --export-config installer/end-user-config.json
-```
-
 Security note: never commit `service-account.json` to Git.
 
-End-user example (no cloud CLIs required):
+### Build
 
 ```bash
-npm run installer:run -- --mode end-user --config-file installer/end-user-config.json
+npm run build
 ```
 
-Or with direct URL:
+### Firebase deploy
 
 ```bash
-npm run installer:run -- --mode end-user --base-url https://us-central1-<project>.cloudfunctions.net/api
+npm run deploy:firebase
 ```
 
-Ready-to-share package output (generated locally):
-
-- `installer/releases/end-user/windows/setup-wizard-win-x64.exe`
-- `installer/releases/end-user/windows/end-user-config.json`
-- `installer/releases/end-user/macos/setup-wizard-macos-arm64`
-- `installer/releases/end-user/macos/end-user-config.json`
-- `installer/releases/end-user/README_END_USER.md`
-
-### Native executable installer (Windows + macOS)
-
-Build native installer binaries:
-
-```bash
-npm install
-npm run installer:build
-```
-
-Generated files are placed in `installer/dist`:
-- `setup-wizard-win-x64.exe` (Windows)
-- `setup-wizard-macos-x64` (macOS Intel)
-- `setup-wizard-macos-arm64` (macOS Apple Silicon)
-
-Run the installer binary from the project root (or move it and run it in the repository folder). The wizard asks for:
-- Firebase project id
-- Functions region
-- Drive replication settings
-- Google Drive folder id
-- optional OAuth Drive credentials
-
-It then configures Firebase/GCP prerequisites and can deploy Functions.
-
-For local dry-run without building binaries:
-
-```bash
-npm run installer:run
-```
-
-The installer now installs project dependencies automatically before configuration (`npm install`).
-You can disable this with:
-
-```bash
---install-deps false
-```
-
-### Local UI installer tool
-
-You can run a local browser UI to manage installation and configuration:
-
-```bash
-npm run installer:ui
-```
-
-Then open:
-
-```txt
-http://127.0.0.1:5055
-```
-
-The UI runs the same installer with your selected options and shows stdout/stderr output, exit code, and completion status.
-
-Program initiator wrappers (double-click):
-
-- Windows: `installer/os/windows/start-installer-ui.bat`
-- macOS: `installer/os/macos/start-installer-ui.command`
-
-Both wrappers start the local UI server and open `http://127.0.0.1:5055` automatically.
-
-Non-interactive mode (CI/automation):
-
-```bash
-installer/dist/setup-wizard-macos-arm64 \
-  --non-interactive \
-  --project sap-content-server-ad957 \
-  --region us-central1 \
-  --replicate-to-drive true \
-  --drive-folder-id <drive-folder-id> \
-  --replicate-strict false \
-  --use-oauth false \
-  --deploy true
-```
-
-Dry-run mode (prints commands only):
-
-```bash
-installer/dist/setup-wizard-win-x64.exe --non-interactive --dry-run --project <project-id>
-```
-
-Machine-readable output for CI:
-
-```bash
-installer/dist/setup-wizard-macos-arm64 --non-interactive --dry-run --project <project-id> --output-json
-```
-
-Write JSON summary to file:
-
-```bash
-installer/dist/setup-wizard-macos-arm64 --non-interactive --dry-run --project <project-id> --output-json installer-output.json
-```
-
-You can also use environment variables instead of flags:
-
-```bash
-INSTALLER_NON_INTERACTIVE=true
-INSTALLER_PROJECT_ID=sap-content-server-ad957
-INSTALLER_REGION=us-central1
-INSTALLER_REPLICATE_TO_DRIVE=true
-INSTALLER_DRIVE_FOLDER_ID=<drive-folder-id>
-INSTALLER_REPLICATE_STRICT=false
-INSTALLER_USE_OAUTH=false
-INSTALLER_DEPLOY=true
-INSTALLER_OUTPUT_JSON=installer-output.json
-```
-
-Installer exit codes:
-- `10` prerequisites/auth/tools
-- `20` configuration/runtime setup
-- `30` deployment
-- `99` unexpected failure
-
-### Release checklist
-
-Before sharing this solution with your team:
-- run `npm run build`
-- rebuild binaries with `npm run installer:build`
-- run `npm run verify:deployed` against target project
-- verify installer JSON output with `--non-interactive --dry-run --output-json`
-- publish binaries from `installer/dist` and this README
-
-What it automates:
-- checks required CLIs (`node`, `npm`, `firebase`, `gcloud`)
-- sets `.firebaserc` default project
-- sets active `gcloud` project
-- enables required Google APIs
-- configures Firebase runtime config for Drive replication
-- optionally deploys Functions
-
-Then validate deployed behavior with smoke tests:
+### Deploy validation
 
 ```bash
 npm run verify:deployed

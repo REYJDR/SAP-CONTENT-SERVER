@@ -1,5 +1,5 @@
 import { FirebaseStorageService } from "../services/firebaseStorageService";
-import { PutDocumentInput, PutDocumentResult } from "../types";
+import { PutDocumentFileInput, PutDocumentInput, PutDocumentResult } from "../types";
 import { StorageAdapter } from "./StorageAdapter";
 
 export class GcsAdapter implements StorageAdapter {
@@ -17,6 +17,21 @@ export class GcsAdapter implements StorageAdapter {
     return {
       storagePath,
       size: input.bytes.length
+    };
+  }
+
+  async putFromFile(input: PutDocumentFileInput): Promise<PutDocumentResult> {
+    const storagePath = await this.firebaseStorageService.uploadFromFile(
+      input.documentId,
+      input.fileName,
+      input.filePath,
+      input.contentType,
+      input.attachmentSource
+    );
+
+    return {
+      storagePath,
+      size: input.size
     };
   }
 

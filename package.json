@@ -3,18 +3,13 @@
   "version": "1.0.0",
   "main": "dist/firebaseFunction.js",
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "bootstrap": "tsx scripts/bootstrap.ts",
-    "installer:run": "node installer/setup-wizard.js",
-    "installer:ui": "node installer/ui-server.js",
-    "installer:ui:launcher": "node installer/ui-launcher.js",
-    "installer:build": "pkg installer/setup-wizard.js --targets node18-win-x64,node18-macos-x64,node18-macos-arm64 --out-path installer/dist",
-    "installer:ui:build": "pkg installer/ui-launcher.js --targets node18-win-x64,node18-macos-arm64 --assets installer/ui/index.html --out-path installer/releases/end-user",
     "verify:deployed": "tsx scripts/verify-deployed.ts",
     "deploy:cloudrun": "gcloud run deploy sap-content-server --source . --region us-central1 --allow-unauthenticated",
     "deploy:firebase": "sh -c 'moved=0; if [ -f .env ]; then mv .env .env.local && moved=1; fi; firebase deploy --only functions; code=$?; if [ \"$moved\" -eq 1 ]; then mv .env.local .env; fi; exit $code'",
@@ -45,7 +40,6 @@
     "@types/morgan": "^1.9.10",
     "@types/multer": "^2.0.0",
     "@types/node": "^25.2.3",
-    "pkg": "^5.8.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

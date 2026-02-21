@@ -19,6 +19,15 @@ export interface PutDocumentInput {
   attachmentSource?: string;
 }
 
+export interface PutDocumentFileInput {
+  documentId: string;
+  fileName: string;
+  contentType: string;
+  filePath: string;
+  size: number;
+  attachmentSource?: string;
+}
+
 export interface PutDocumentResult {
   storagePath?: string;
   driveFileId?: string;

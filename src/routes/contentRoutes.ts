@@ -1,19 +1,51 @@
 import { randomUUID } from "crypto";
 import Busboy from "busboy";
 import express from "express";
+import { createWriteStream } from "fs";
+import { mkdtemp, rm } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
+import { Readable, Transform } from "stream";
+import { pipeline } from "stream/promises";
 import { env } from "../config/env";
 import { getRuntimeAppConfig } from "../config/runtimeConfig";
 import { deleteDocument, upsertDocument } from "../repository/documentRepository";
-import { DriveReplicationService } from "../services/driveReplicationService";
 import { FirebaseStorageService } from "../services/firebaseStorageService";
 import { createStorageAdapter } from "../storage";
+import type { DriveReplicationService } from "../services/driveReplicationService";
 
 const router = express.Router();
-const storageAdapter = createStorageAdapter();
-const firebaseStorageService = new FirebaseStorageService();
-const driveReplicationService = new DriveReplicationService();
-const rawUpload = express.raw({ type: "*/*", limit: "25mb" });
+const maxUploadBytes = env.MAX_UPLOAD_MB * 1024 * 1024;
 const shouldPersistMetadata = env.STORAGE_BACKEND === "drive";
+
+let storageAdapterSingleton: ReturnType<typeof createStorageAdapter> | null = null;
+let firebaseStorageServiceSingleton: FirebaseStorageService | null = null;
+let driveReplicationServiceSingleton: DriveReplicationService | null = null;
+
+function getStorageAdapter() {
+  if (!storageAdapterSingleton) {
+    storageAdapterSingleton = createStorageAdapter();
+  }
+
+  return storageAdapterSingleton;
+}
+
+function getFirebaseStorageService() {
+  if (!firebaseStorageServiceSingleton) {
+    firebaseStorageServiceSingleton = new FirebaseStorageService();
+  }
+
+  return firebaseStorageServiceSingleton;
+}
+
+function getDriveReplicationService() {
+  if (!driveReplicationServiceSingleton) {
+    const { DriveReplicationService } = require("../services/driveReplicationService") as typeof import("../services/driveReplicationService");
+    driveReplicationServiceSingleton = new DriveReplicationService();
+  }
+
+  return driveReplicationServiceSingleton;
+}
 
 const attachmentSourceHints = [
   "attachmentSource",
@@ -161,7 +193,7 @@ async function resolveAttachmentSource(
     return directSource;
   }
 
-  const metadata = await firebaseStorageService.getDocumentMetadata(documentId);
+  const metadata = await getFirebaseStorageService().getDocumentMetadata(documentId);
   if (!metadata?.attachmentSource) {
     return undefined;
   }
@@ -300,7 +332,7 @@ async function replicateToDriveIfEnabled(
     return false;
   }
 
-  const metadata = await firebaseStorageService.getDocumentMetadata(documentId);
+  const metadata = await getFirebaseStorageService().getDocumentMetadata(documentId);
   if (!metadata) {
     return false;
   }
@@ -325,7 +357,58 @@ async function replicateToDriveIfEnabled(
   }
 
   try {
-    await driveReplicationService.replicate(documentId, originalFileName, contentType, bytes, {
+    await getDriveReplicationService().replicate(documentId, originalFileName, contentType, bytes, {
+      businessObjectType,
+      businessObjectId,
+      sourceLocation,
+      destinationLocation
+    });
+    return true;
+  } catch (error) {
+    if (isReplicationStrictNow()) {
+      throw error;
+    }
+
+    console.error("Drive replication failed:", error);
+    return false;
+  }
+}
+
+async function replicateFileToDriveIfEnabled(
+  documentId: string,
+  contentType: string,
+  filePath: string
+): Promise<boolean> {
+  if (!shouldReplicateToDriveNow()) {
+    return false;
+  }
+
+  const metadata = await getFirebaseStorageService().getDocumentMetadata(documentId);
+  if (!metadata) {
+    return false;
+  }
+
+  const businessObjectType = metadata.businessObjectType?.trim();
+  const businessObjectId = metadata.businessObjectId?.trim();
+  const originalFileName = metadata.originalFileName?.trim();
+  const sourceLocation = metadata.sourceLocation?.trim();
+  const destinationLocation = metadata.destinationLocation?.trim();
+
+  if (!businessObjectType || !businessObjectId || !originalFileName) {
+    console.log(
+      `[SAP-DRIVE-REPLICATION-SKIPPED] ${JSON.stringify({
+        documentId,
+        reason: "missing required metadata fields",
+        businessObjectType: Boolean(businessObjectType),
+        businessObjectId: Boolean(businessObjectId),
+        originalFileName: Boolean(originalFileName)
+      })}`
+    );
+    return false;
+  }
+
+  try {
+    await getDriveReplicationService().replicateFromFile(documentId, originalFileName, contentType, filePath, {
       businessObjectType,
       businessObjectId,
       sourceLocation,
@@ -414,7 +497,7 @@ async function replicateStoredDocumentToDriveIfEnabled(documentId: string): Prom
     return false;
   }
 
-  const payload = await storageAdapter.get(documentId);
+  const payload = await getStorageAdapter().get(documentId);
   if (!payload) {
     return false;
   }
@@ -428,7 +511,7 @@ async function deleteDriveReplicasIfEnabled(documentId: string): Promise<void> {
   }
 
   try {
-    await driveReplicationService.deleteReplicas(documentId);
+    await getDriveReplicationService().deleteReplicas(documentId);
   } catch (error) {
     if (isReplicationStrictNow()) {
       throw error;
@@ -441,7 +524,9 @@ async function deleteDriveReplicasIfEnabled(documentId: string): Promise<void> {
 type UploadedFile = {
   originalname: string;
   mimetype: string;
-  buffer: Buffer;
+  tempFilePath: string;
+  tempDir: string;
+  size: number;
 };
 
 type ParsedMultipart = {
@@ -449,52 +534,203 @@ type ParsedMultipart = {
   fields: Record<string, string>;
 };
 
+function createPayloadTooLargeError(): Error {
+  return new Error(`payload too large (max ${env.MAX_UPLOAD_MB}MB)`);
+}
+
+function createBadRequestError(message: string): Error & { statusCode: number } {
+  const error = new Error(message) as Error & { statusCode: number };
+  error.statusCode = 400;
+  return error;
+}
+
+function sanitizeUploadFileName(fileName: string): string {
+  const trimmed = fileName.trim();
+  if (!trimmed) {
+    return "upload.bin";
+  }
+
+  const sanitized = trimmed
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    ?.replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return sanitized || "upload.bin";
+}
+
+async function createTempUploadTarget(fileNameHint: string): Promise<{ tempDir: string; tempFilePath: string }> {
+  const tempDir = await mkdtemp(join(tmpdir(), "sap-content-upload-"));
+  return {
+    tempDir,
+    tempFilePath: join(tempDir, sanitizeUploadFileName(fileNameHint))
+  };
+}
+
+async function cleanupTempUpload(tempDir?: string): Promise<void> {
+  if (!tempDir) {
+    return;
+  }
+
+  await rm(tempDir, { recursive: true, force: true });
+}
+
+function createMaxSizeTransform(maxBytes: number): Transform {
+  let totalBytes = 0;
+
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      const chunkSize = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+      totalBytes += chunkSize;
+
+      if (totalBytes > maxBytes) {
+        callback(createPayloadTooLargeError());
+        return;
+      }
+
+      callback(null, chunk);
+    }
+  });
+}
+
 async function parseMultipart(req: express.Request): Promise<ParsedMultipart> {
   const contentType = req.headers["content-type"];
   if (!contentType || !contentType.includes("multipart/form-data")) {
-    throw new Error("multipart/form-data content-type is required");
+    throw createBadRequestError("multipart/form-data content-type is required");
+  }
+
+  const contentLengthHeader = req.headers["content-length"];
+  const contentLength =
+    typeof contentLengthHeader === "string" ? Number.parseInt(contentLengthHeader, 10) : Number.NaN;
+  if (Number.isFinite(contentLength) && contentLength > maxUploadBytes) {
+    throw createPayloadTooLargeError();
   }
 
   const fields: Record<string, string> = {};
   let file: UploadedFile | null = null;
+  let fileTooLarge = false;
+  const tempDirs: string[] = [];
+  const requestWithRawBody = req as express.Request & { rawBody?: Buffer };
+  const rawBody = requestWithRawBody.rawBody;
 
-  await new Promise<void>((resolve, reject) => {
-    const busboy = Busboy({ headers: req.headers });
-
-    busboy.on("field", (name, value) => {
-      fields[name] = value;
-    });
-
-    busboy.on("file", (_fieldName, stream, info) => {
-      const chunks: Buffer[] = [];
-
-      stream.on("data", (chunk: Buffer) => {
-        chunks.push(chunk);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const busboy = Busboy({
+        headers: req.headers,
+        limits: {
+          files: 1,
+          fileSize: maxUploadBytes
+        }
       });
 
-      stream.on("error", reject);
+      const fileWriteTasks: Promise<void>[] = [];
 
-      stream.on("end", () => {
-        file = {
-          originalname: info.filename || "upload.bin",
-          mimetype: info.mimeType || "application/octet-stream",
-          buffer: Buffer.concat(chunks)
-        };
+      busboy.on("field", (name, value) => {
+        fields[name] = value;
       });
+
+      busboy.on("file", (_fieldName, stream, info) => {
+        const fileName = info.filename || "upload.bin";
+        const mimeType = info.mimeType || "application/octet-stream";
+        const writeTask = (async () => {
+          const { tempDir, tempFilePath } = await createTempUploadTarget(fileName);
+          tempDirs.push(tempDir);
+          let size = 0;
+
+          stream.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+          });
+
+          await pipeline(stream, createWriteStream(tempFilePath));
+
+          file = {
+            originalname: fileName,
+            mimetype: mimeType,
+            tempFilePath,
+            tempDir,
+            size
+          };
+        })();
+
+        fileWriteTasks.push(writeTask);
+
+        writeTask.catch(reject);
+
+        stream.on("limit", () => {
+          fileTooLarge = true;
+        });
+
+        stream.on("error", reject);
+      });
+
+      busboy.on("filesLimit", () => {
+        reject(createBadRequestError("Only one file is allowed in multipart/form-data"));
+      });
+
+      busboy.on("error", reject);
+      busboy.on("finish", () => {
+        Promise.all(fileWriteTasks)
+          .then(() => resolve())
+          .catch(reject);
+      });
+
+      req.on("aborted", () => {
+        reject(createBadRequestError("multipart upload aborted by client"));
+      });
+
+      req.on("error", reject);
+
+      if (Buffer.isBuffer(rawBody) && (!req.readable || req.readableEnded)) {
+        Readable.from(rawBody).pipe(busboy);
+        requestWithRawBody.rawBody = undefined;
+      } else {
+        req.pipe(busboy);
+      }
     });
+  } catch (error) {
+    await Promise.all(tempDirs.map((dir) => cleanupTempUpload(dir)));
 
-    busboy.on("error", reject);
-    busboy.on("finish", resolve);
+    const message = error instanceof Error ? error.message : String(error);
+    if (/unexpected end of form|unexpected end of multipart data|premature close/i.test(message)) {
+      throw createBadRequestError("incomplete multipart form data");
+    }
 
-    const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
-    if (Buffer.isBuffer(rawBody) && rawBody.length > 0) {
-      busboy.end(rawBody);
-    } else {
-      req.pipe(busboy);
+    throw error;
+  }
+
+  if (fileTooLarge) {
+    await Promise.all(tempDirs.map((dir) => cleanupTempUpload(dir)));
+    throw createPayloadTooLargeError();
+  }
+
+  return { file, fields };
+}
+
+async function writeRawRequestToTempFile(
+  req: express.Request,
+  fileNameHint: string
+): Promise<{ tempDir: string; tempFilePath: string; size: number }> {
+  const { tempDir, tempFilePath } = await createTempUploadTarget(fileNameHint);
+  const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+  const source = Buffer.isBuffer(rawBody) ? Readable.from(rawBody) : req;
+
+  let size = 0;
+  const countingTransform = new Transform({
+    transform(chunk, encoding, callback) {
+      const chunkSize = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), encoding);
+      size += chunkSize;
+      callback(null, chunk);
     }
   });
 
-  return { file, fields };
+  try {
+    await pipeline(source, createMaxSizeTransform(maxUploadBytes), countingTransform, createWriteStream(tempFilePath));
+    return { tempDir, tempFilePath, size };
+  } catch (error) {
+    await cleanupTempUpload(tempDir);
+    throw error;
+  }
 }
 
 function pickDocumentId(req: express.Request): string | undefined {
@@ -611,7 +847,7 @@ async function streamDocument(
   res: express.Response,
   options?: { notFoundStatus?: number; notFoundBody?: string }
 ): Promise<boolean> {
-  const payload = await storageAdapter.get(documentId);
+  const payload = await getStorageAdapter().get(documentId);
   if (!payload) {
     const notFoundStatus = options?.notFoundStatus ?? 404;
     const notFoundBody = options?.notFoundBody;
@@ -654,21 +890,21 @@ router.get("/health/storage", async (_req, res) => {
   const probePayload = Buffer.from(`storage-health-${new Date().toISOString()}`, "utf8");
 
   try {
-    await firebaseStorageService.upload(probeId, probeFileName, probePayload, probeContentType);
-    const downloaded = await firebaseStorageService.downloadByDocumentId(probeId);
+    await getFirebaseStorageService().upload(probeId, probeFileName, probePayload, probeContentType);
+    const downloaded = await getFirebaseStorageService().downloadByDocumentId(probeId);
     const isMatch = downloaded
       ? downloaded.contentType === probeContentType &&
         downloaded.fileName === probeFileName &&
         downloaded.bytes.equals(probePayload)
       : false;
 
-    await firebaseStorageService.removeByDocumentId(probeId);
+    await getFirebaseStorageService().removeByDocumentId(probeId);
 
     if (!isMatch) {
       return res.status(500).json({
         status: "error",
         backend: env.STORAGE_BACKEND,
-        bucket: firebaseStorageService.getBucketName(),
+        bucket: getFirebaseStorageService().getBucketName(),
         message: "storage probe mismatch"
       });
     }
@@ -676,11 +912,11 @@ router.get("/health/storage", async (_req, res) => {
     return res.status(200).json({
       status: "ok",
       backend: env.STORAGE_BACKEND,
-      bucket: firebaseStorageService.getBucketName()
+      bucket: getFirebaseStorageService().getBucketName()
     });
   } catch (error) {
     try {
-      await firebaseStorageService.removeByDocumentId(probeId);
+      await getFirebaseStorageService().removeByDocumentId(probeId);
     } catch {
       // best-effort cleanup
     }
@@ -688,7 +924,7 @@ router.get("/health/storage", async (_req, res) => {
     return res.status(500).json({
       status: "error",
       backend: env.STORAGE_BACKEND,
-      bucket: env.FIREBASE_STORAGE_BUCKET || "unknown",
+      bucket: env.STORAGE_BUCKET || env.FIREBASE_STORAGE_BUCKET || "unknown",
       message: error instanceof Error ? error.message : "storage probe failed"
     });
   }
@@ -705,7 +941,7 @@ router.get("/health/drive-replication", async (_req, res) => {
   }
 
   try {
-    const diagnosis = await driveReplicationService.diagnoseFolder();
+    const diagnosis = await getDriveReplicationService().diagnoseFolder();
     return res.status(200).json({
       status: "ok",
       backend: env.STORAGE_BACKEND,
@@ -719,7 +955,7 @@ router.get("/health/drive-replication", async (_req, res) => {
       replicateToDrive: shouldReplicateToDriveNow(),
       folderId: (() => {
         try {
-          return driveReplicationService.getConfiguredFolderId();
+          return getDriveReplicationService().getConfiguredFolderId();
         } catch {
           return "unknown";
         }
@@ -795,7 +1031,7 @@ router.get("/ContentServer/ContentServer.dll", async (req, res, next) => {
 
       logDeleteRequest(req, "ContentServer.GET", documentId, action);
 
-      await storageAdapter.remove(documentId);
+      await getStorageAdapter().remove(documentId);
       await deleteDriveReplicasIfEnabled(documentId);
       if (shouldPersistMetadata) {
         await deleteDocument(documentId);
@@ -818,7 +1054,7 @@ router.delete("/ContentServer/ContentServer.dll", async (req, res, next) => {
 
     logDeleteRequest(req, "ContentServer.DELETE", documentId, "DELETE");
 
-    await storageAdapter.remove(documentId);
+    await getStorageAdapter().remove(documentId);
     await deleteDriveReplicasIfEnabled(documentId);
     if (shouldPersistMetadata) {
       await deleteDocument(documentId);
@@ -855,7 +1091,7 @@ router.post("/ContentServer/ContentServer.dll", async (req, res, next) => {
 
       logDeleteRequest(req, "ContentServer.PUT", documentId, action);
 
-      await storageAdapter.remove(documentId);
+      await getStorageAdapter().remove(documentId);
       await deleteDriveReplicasIfEnabled(documentId);
       if (shouldPersistMetadata) {
         await deleteDocument(documentId);
@@ -868,7 +1104,7 @@ router.post("/ContentServer/ContentServer.dll", async (req, res, next) => {
       fields: parsed.fields,
       fileName: parsed.file?.originalname,
       fileMimeType: parsed.file?.mimetype,
-      fileSize: parsed.file?.buffer.length
+      fileSize: parsed.file?.size
     });
 
     const cmd = String(req.query.cmd || req.query.command || parsed.fields.cmd || "PUT").toUpperCase();
@@ -889,35 +1125,40 @@ router.post("/ContentServer/ContentServer.dll", async (req, res, next) => {
     const contentType = parsed.file.mimetype || "application/octet-stream";
     const attachmentSource = await resolveAttachmentSource(req, documentId, parsed.fields);
 
-    const putResult = await storageAdapter.put({
-      documentId,
-      fileName: parsed.file.originalname,
-      contentType,
-      bytes: parsed.file.buffer,
-      attachmentSource
-    });
-
-    const replicatedToDrive = await replicateToDriveIfEnabled(documentId, contentType, parsed.file.buffer);
-
-    if (shouldPersistMetadata) {
-      await upsertDocument({
-        id: documentId,
-        backend: env.STORAGE_BACKEND,
-        attachmentSource,
+    try {
+      const putResult = await getStorageAdapter().putFromFile({
+        documentId,
         fileName: parsed.file.originalname,
         contentType,
-        size: putResult.size,
-        storagePath: putResult.storagePath,
-        driveFileId: putResult.driveFileId
+        filePath: parsed.file.tempFilePath,
+        size: parsed.file.size,
+        attachmentSource
       });
-    }
 
-    return res.status(201).json({
-      documentId,
-      backend: env.STORAGE_BACKEND,
-      size: putResult.size,
-      replicatedToDrive
-    });
+      const replicatedToDrive = await replicateFileToDriveIfEnabled(documentId, contentType, parsed.file.tempFilePath);
+
+      if (shouldPersistMetadata) {
+        await upsertDocument({
+          id: documentId,
+          backend: env.STORAGE_BACKEND,
+          attachmentSource,
+          fileName: parsed.file.originalname,
+          contentType,
+          size: putResult.size,
+          storagePath: putResult.storagePath,
+          driveFileId: putResult.driveFileId
+        });
+      }
+
+      return res.status(201).json({
+        documentId,
+        backend: env.STORAGE_BACKEND,
+        size: putResult.size,
+        replicatedToDrive
+      });
+    } finally {
+      await cleanupTempUpload(parsed.file.tempDir);
+    }
   } catch (error) {
     return next(error);
   }
@@ -957,7 +1198,7 @@ router.put("/ContentServer/ContentServer.dll", async (req, res, next) => {
       }
 
       logDeleteRequest(req, "ContentServer.POST", documentId, action);
-      await storageAdapter.remove(documentId);
+      await getStorageAdapter().remove(documentId);
       await deleteDriveReplicasIfEnabled(documentId);
       if (shouldPersistMetadata) {
         await deleteDocument(documentId);
@@ -1008,7 +1249,7 @@ router.post("/sap/metadata", async (req, res, next) => {
       }
 
       try {
-        const metadata = await firebaseStorageService.upsertDocumentMetadata(documentId, {
+        const metadata = await getFirebaseStorageService().upsertDocumentMetadata(documentId, {
           businessObjectType: item.businessObjectType,
           businessObjectId: item.businessObjectId,
           sourceLocation: item.sourceLocation,
@@ -1068,7 +1309,7 @@ router.post("/sap/metadata", async (req, res, next) => {
 router.get("/sap/metadata/:documentId", async (req, res, next) => {
   try {
     const { documentId } = req.params;
-    const metadata = await firebaseStorageService.getDocumentMetadata(documentId);
+    const metadata = await getFirebaseStorageService().getDocumentMetadata(documentId);
     if (!metadata) {
       return res.status(404).json({ error: "metadata not found" });
     }
@@ -1091,51 +1332,47 @@ router.post("/sap/content", async (req, res, next) => {
     const contentType = parsed.file.mimetype || "application/octet-stream";
     const attachmentSource = await resolveAttachmentSource(req, documentId, parsed.fields);
 
-    const putResult = await storageAdapter.put({
-      documentId,
-      fileName: parsed.file.originalname,
-      contentType,
-      bytes: parsed.file.buffer,
-      attachmentSource
-    });
-
-    const replicatedToDrive = await replicateToDriveIfEnabled(documentId, contentType, parsed.file.buffer);
-
-    if (shouldPersistMetadata) {
-      await upsertDocument({
-        id: documentId,
-        backend: env.STORAGE_BACKEND,
-        attachmentSource,
+    try {
+      const putResult = await getStorageAdapter().putFromFile({
+        documentId,
         fileName: parsed.file.originalname,
         contentType,
-        size: putResult.size,
-        storagePath: putResult.storagePath,
-        driveFileId: putResult.driveFileId
+        filePath: parsed.file.tempFilePath,
+        size: parsed.file.size,
+        attachmentSource
       });
-    }
 
-    return res.status(201).json({
-      documentId,
-      backend: env.STORAGE_BACKEND,
-      size: putResult.size,
-      replicatedToDrive
-    });
+      const replicatedToDrive = await replicateFileToDriveIfEnabled(documentId, contentType, parsed.file.tempFilePath);
+
+      if (shouldPersistMetadata) {
+        await upsertDocument({
+          id: documentId,
+          backend: env.STORAGE_BACKEND,
+          attachmentSource,
+          fileName: parsed.file.originalname,
+          contentType,
+          size: putResult.size,
+          storagePath: putResult.storagePath,
+          driveFileId: putResult.driveFileId
+        });
+      }
+
+      return res.status(201).json({
+        documentId,
+        backend: env.STORAGE_BACKEND,
+        size: putResult.size,
+        replicatedToDrive
+      });
+    } finally {
+      await cleanupTempUpload(parsed.file.tempDir);
+    }
   } catch (error) {
     return next(error);
   }
 });
 
-router.post("/sap/content/raw", rawUpload, async (req, res, next) => {
+router.post("/sap/content/raw", async (req, res, next) => {
   try {
-    const bytes = Buffer.isBuffer(req.body)
-      ? (req.body as Buffer)
-      : Buffer.isBuffer((req as express.Request & { rawBody?: Buffer }).rawBody)
-        ? (req as express.Request & { rawBody?: Buffer }).rawBody!
-        : null;
-    if (!bytes || !Buffer.isBuffer(bytes) || bytes.length === 0) {
-      return res.status(400).json({ error: "raw request body is required" });
-    }
-
     const documentId =
       (req.query.documentId as string | undefined) ||
       (req.header("x-document-id") as string | undefined) ||
@@ -1147,34 +1384,120 @@ router.post("/sap/content/raw", rawUpload, async (req, res, next) => {
     const contentType = req.header("content-type") || "application/octet-stream";
     const attachmentSource = await resolveAttachmentSource(req, documentId);
 
-    const putResult = await storageAdapter.put({
+    const rawUploadFile = await writeRawRequestToTempFile(req, fileName);
+    if (rawUploadFile.size === 0) {
+      await cleanupTempUpload(rawUploadFile.tempDir);
+      return res.status(400).json({ error: "raw request body is required" });
+    }
+
+    try {
+      const putResult = await getStorageAdapter().putFromFile({
+        documentId,
+        fileName,
+        contentType,
+        filePath: rawUploadFile.tempFilePath,
+        size: rawUploadFile.size,
+        attachmentSource
+      });
+
+      const replicatedToDrive = await replicateFileToDriveIfEnabled(documentId, contentType, rawUploadFile.tempFilePath);
+
+      if (shouldPersistMetadata) {
+        await upsertDocument({
+          id: documentId,
+          backend: env.STORAGE_BACKEND,
+          attachmentSource,
+          fileName,
+          contentType,
+          size: putResult.size,
+          storagePath: putResult.storagePath,
+          driveFileId: putResult.driveFileId
+        });
+      }
+
+      return res.status(201).json({
+        documentId,
+        backend: env.STORAGE_BACKEND,
+        size: putResult.size,
+        replicatedToDrive
+      });
+    } finally {
+      await cleanupTempUpload(rawUploadFile.tempDir);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/exceeds limit/i.test(message) || /too large/i.test(message) || /payload too large/i.test(message)) {
+      return res.status(413).json({ error: `payload too large (max ${env.MAX_UPLOAD_MB}MB)` });
+    }
+    return next(error);
+  }
+});
+
+router.post("/sap/content/signed-url", async (req, res, next) => {
+  try {
+    if (env.STORAGE_BACKEND !== "gcs") {
+      return res.status(400).json({ error: "signed upload URL is only supported when STORAGE_BACKEND=gcs" });
+    }
+
+    const bodySource = req.body as Record<string, unknown> | undefined;
+    const requestedDocumentId = readString(bodySource?.documentId);
+    const fileName = readString(bodySource?.fileName) || `${requestedDocumentId || randomUUID()}.bin`;
+    const contentType = readString(bodySource?.contentType) || "application/octet-stream";
+    const expiresInMinutesRaw = Number(bodySource?.expiresInMinutes);
+    const expiresInMinutes = Number.isFinite(expiresInMinutesRaw)
+      ? Math.min(Math.max(Math.trunc(expiresInMinutesRaw), 1), 60)
+      : 15;
+
+    const documentId = requestedDocumentId || randomUUID();
+    const attachmentSource = pickAttachmentSource(req);
+    const signed = await getFirebaseStorageService().createResumableUploadSession(
       documentId,
       fileName,
       contentType,
-      bytes,
-      attachmentSource
-    });
+      attachmentSource,
+      expiresInMinutes
+    );
 
-    const replicatedToDrive = await replicateToDriveIfEnabled(documentId, contentType, bytes);
-
-    if (shouldPersistMetadata) {
-      await upsertDocument({
-        id: documentId,
-        backend: env.STORAGE_BACKEND,
-        attachmentSource,
-        fileName,
-        contentType,
-        size: putResult.size,
-        storagePath: putResult.storagePath,
-        driveFileId: putResult.driveFileId
-      });
-    }
-
-    return res.status(201).json({
+    return res.status(200).json({
       documentId,
       backend: env.STORAGE_BACKEND,
-      size: putResult.size,
-      replicatedToDrive
+      method: "PUT",
+      uploadUrl: signed.uploadUrl,
+      uploadType: "gcs-resumable-session",
+      expiresAt: signed.expiresAt,
+      headers: {
+        "Content-Type": contentType
+      }
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/sap/content/signed-complete", async (req, res, next) => {
+  try {
+    if (env.STORAGE_BACKEND !== "gcs") {
+      return res.status(400).json({ error: "signed upload complete is only supported when STORAGE_BACKEND=gcs" });
+    }
+
+    const bodySource = req.body as Record<string, unknown> | undefined;
+    const documentId = readString(bodySource?.documentId);
+    if (!documentId) {
+      return res.status(400).json({ error: "documentId is required" });
+    }
+
+    const objectInfo = await getFirebaseStorageService().getStoredObjectInfoByDocumentId(documentId);
+    if (!objectInfo) {
+      return res.status(404).json({ error: "uploaded object not found" });
+    }
+
+    return res.status(200).json({
+      documentId,
+      backend: env.STORAGE_BACKEND,
+      storagePath: objectInfo.storagePath,
+      size: objectInfo.size,
+      contentType: objectInfo.contentType,
+      fileName: objectInfo.fileName
     });
   } catch (error) {
     return next(error);
@@ -1195,7 +1518,7 @@ router.delete("/sap/content/:documentId", async (req, res, next) => {
   try {
     const { documentId } = req.params;
     logDeleteRequest(req, "sap/content/:documentId", documentId, "DELETE");
-    await storageAdapter.remove(documentId);
+    await getStorageAdapter().remove(documentId);
     await deleteDriveReplicasIfEnabled(documentId);
     if (shouldPersistMetadata) {
       await deleteDocument(documentId);

@@ -1,0 +1,11 @@
+﻿[2026-02-20 08:23:01Z] Queued deployment run cce524142033491ab069b58500f6e540
+[2026-02-20 08:23:02Z] Worker job started. JobId=1 State=Running
+[2026-02-20 08:23:02Z] Worker script: C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-worker.ps1
+[2026-02-20 08:23:03Z] Deployment worker started.
+[2026-02-20 08:23:03Z] Input: projectId=sap-middleware-zytm-c02f5 region=us-central1 memoryMb=512 timeoutSeconds=120
+[2026-02-20 08:23:03Z] Input: serviceAccountPath=sap-middleware-zytm-c02f5-firebase-adminsdk-fbsvc-97641a4563.json
+[2026-02-20 08:23:03Z] Input: functionSourcePath=C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\function-source
+[2026-02-20 08:23:03Z] ERROR: Service account JSON not found: sap-middleware-zytm-c02f5-firebase-adminsdk-fbsvc-97641a4563.json
+[2026-02-20 08:23:03Z] STACK: en Invoke-FunctionDeployment, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-core.ps1: línea 171
+en <ScriptBlock>, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-worker.ps1: línea 58
+en <ScriptBlock>, <sin archivo>: línea 4

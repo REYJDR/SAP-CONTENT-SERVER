@@ -1,0 +1,14 @@
+﻿[2026-02-20 06:58:59Z] Queued deployment run 0170311e377e4a578f99b8cdce2ccc84
+[2026-02-20 06:58:59Z] Worker process started. PID=2928
+[2026-02-20 06:58:59Z] Worker args: -NoProfile -ExecutionPolicy Bypass -File "C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-worker.ps1" -RunId "0170311e377e4a578f99b8cdce2ccc84" -RequestPath "C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\runtime\0170311e377e4a578f99b8cdce2ccc84.request.json" -StateDir "C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\runtime" -WizardRoot "C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard"
+[2026-02-20 06:59:01Z] Deployment worker started.
+[2026-02-20 06:59:01Z] Input: projectId=sap-middleware-zytm-c02f5 region=us-central1 memoryMb=512 timeoutSeconds=120
+[2026-02-20 06:59:01Z] Input: serviceAccountPath=sap-middleware-zytm-c02f5-firebase-adminsdk-fbsvc-97641a4563.json
+[2026-02-20 06:59:01Z] Input: functionSourcePath=C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\function-source
+[2026-02-20 06:59:01Z] Loading service account
+[2026-02-20 06:59:01Z] Getting OAuth token
+[2026-02-20 06:59:01Z] ERROR: Error en la invocación del método porque [System.Security.Cryptography.RSACryptoServiceProvider] no contiene ningún método llamado 'ImportPkcs8PrivateKey'.
+[2026-02-20 06:59:01Z] STACK: en New-JwtAssertion, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-core.ps1: línea 49
+en Get-AccessToken, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-core.ps1: línea 68
+en Invoke-FunctionDeployment, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-core.ps1: línea 163
+en <ScriptBlock>, C:\Mac\Home\Documents\GitHub\SAP-CONTENT SERVER\windows-wizard\deploy-worker.ps1: línea 58

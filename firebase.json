@@ -7,10 +7,12 @@
       "firebase-debug.log",
       "firebase-debug.*.log",
       "*.local",
-      ".env"
-    ],
-    "predeploy": [
-      "npm run build"
+      ".env",
+      ".firebase-cli-home/**",
+      ".firebase-cli-appdata/**",
+      "*.zip",
+      "service-account.runtime.*.json",
+      "firebase.deploy.*.json"
     ]
   }
 }

@@ -1,7 +1,10 @@
+import { createReadStream } from "fs";
 import { Readable } from "stream";
 import { env } from "../config/env";
 import { getRuntimeAppConfig } from "../config/runtimeConfig";
 import { buildDriveClient } from "./driveAuth";
+
+const DRIVE_REPLICATION_FIXED_STRUCTURE = ["{foType}", "{foId}", "Attachment"] as const;
 
 function assertFolderId(): string {
   const runtimeAppConfig = getRuntimeAppConfig();
@@ -22,6 +25,17 @@ function normalizeFolderName(value: string): string {
   return value.trim().replace(/\/+$/g, "") || "unknown";
 }
 
+function stripLeadingZeros(value: string): string {
+  const trimmed = value.trim();
+  const withoutLeadingZeros = trimmed.replace(/^0+/, "");
+
+  if (!withoutLeadingZeros) {
+    return "0";
+  }
+
+  return withoutLeadingZeros;
+}
+
 function normalizeLocationSegment(value?: string): string {
   if (!value) {
     return "unknown";
@@ -39,6 +53,63 @@ function buildFoObjectFolderName(
   const source = normalizeLocationSegment(sourceLocation);
   const destination = normalizeLocationSegment(destinationLocation);
   return `${businessObjectId} (${source} - ${destination})`;
+}
+
+function resolveFoTypeMap(): Record<string, string> {
+  const runtimeAppConfig = getRuntimeAppConfig();
+  const raw = runtimeAppConfig.drive_replication_fo_type_map || env.DRIVE_REPLICATION_FO_TYPE_MAP || "{}";
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const normalizedEntries: Array<[string, string]> = [];
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof key !== "string" || !key.trim()) {
+        continue;
+      }
+      if (typeof value !== "string" || !value.trim()) {
+        continue;
+      }
+      normalizedEntries.push([key.trim(), value.trim()]);
+    }
+
+    return Object.fromEntries(normalizedEntries);
+  } catch {
+    return {};
+  }
+}
+
+function resolveFoTypeFolderName(rawFoType: string, foTypeMap: Record<string, string>): string {
+  const trimmed = String(rawFoType || "").trim();
+  const upper = trimmed.toUpperCase();
+  const mapped = foTypeMap[trimmed] || foTypeMap[upper] || foTypeMap.default || foTypeMap.DEFAULT;
+
+  if (mapped && String(mapped).trim()) {
+    return normalizeFolderName(stripLeadingZeros(String(mapped)));
+  }
+
+  return normalizeFolderName(stripLeadingZeros(trimmed || "unknown"));
+}
+
+function buildFixedReplicationPathSegments(tokens: Record<string, string>): string[] {
+  const segments = DRIVE_REPLICATION_FIXED_STRUCTURE
+    .map((segment) =>
+      segment.replace(/\{([a-zA-Z0-9_]+)\}/g, (_full, key) => {
+        const tokenValue = tokens[key] ?? "";
+        return String(tokenValue);
+      })
+    )
+    .map((segment) => normalizeFolderName(segment))
+    .filter((segment) => segment !== "unknown" && segment.length > 0);
+
+  if (segments.length > 0) {
+    return segments;
+  }
+
+  return [normalizeFolderName(tokens.foType), normalizeFolderName(tokens.foId), "Attachment"];
 }
 
 export class DriveReplicationService {
@@ -133,14 +204,25 @@ export class DriveReplicationService {
     }
   ): Promise<string> {
     const rootFolderId = assertFolderId();
-    const businessObjectTypeFolder = normalizeFolderName(options.businessObjectType);
+    const foTypeMap = resolveFoTypeMap();
+    const mappedFoTypeFolder = resolveFoTypeFolderName(options.businessObjectType, foTypeMap);
     const businessObjectIdFolder = normalizeFolderName(
       buildFoObjectFolderName(options.businessObjectId, options.sourceLocation, options.destinationLocation)
     );
+    const normalizedFoId = stripLeadingZeros(businessObjectIdFolder);
+    const pathSegments = buildFixedReplicationPathSegments({
+      foType: mappedFoTypeFolder,
+      foTypeRaw: normalizeFolderName(options.businessObjectType),
+      foId: normalizedFoId,
+      source: normalizeFolderName(options.sourceLocation || "unknown"),
+      destination: normalizeFolderName(options.destinationLocation || "unknown"),
+      attachment: "Attachment"
+    });
 
-    const typeFolderId = await this.ensureChildFolder(rootFolderId, businessObjectTypeFolder);
-    const objectFolderId = await this.ensureChildFolder(typeFolderId, businessObjectIdFolder);
-    const attachmentFolderId = await this.ensureChildFolder(objectFolderId, "Attachment");
+    let uploadParentId = rootFolderId;
+    for (const segment of pathSegments) {
+      uploadParentId = await this.ensureChildFolder(uploadParentId, segment);
+    }
 
     await this.deleteReplicas(documentId);
 
@@ -148,7 +230,7 @@ export class DriveReplicationService {
       requestBody: {
         name: fileName,
         mimeType: contentType,
-        parents: [attachmentFolderId],
+        parents: [uploadParentId],
         appProperties: {
           documentId,
           businessObjectType: options.businessObjectType,
@@ -160,6 +242,70 @@ export class DriveReplicationService {
       media: {
         mimeType: contentType,
         body: Readable.from(bytes)
+      },
+      fields: "id",
+      supportsAllDrives: true
+    });
+
+    const driveFileId = response.data.id;
+    if (!driveFileId) {
+      throw new Error("Failed to create replicated file on Google Drive");
+    }
+
+    return driveFileId;
+  }
+
+  async replicateFromFile(
+    documentId: string,
+    fileName: string,
+    contentType: string,
+    filePath: string,
+    options: {
+      businessObjectType: string;
+      businessObjectId: string;
+      sourceLocation?: string;
+      destinationLocation?: string;
+    }
+  ): Promise<string> {
+    const rootFolderId = assertFolderId();
+    const foTypeMap = resolveFoTypeMap();
+    const mappedFoTypeFolder = resolveFoTypeFolderName(options.businessObjectType, foTypeMap);
+    const businessObjectIdFolder = normalizeFolderName(
+      buildFoObjectFolderName(options.businessObjectId, options.sourceLocation, options.destinationLocation)
+    );
+    const normalizedFoId = stripLeadingZeros(businessObjectIdFolder);
+    const pathSegments = buildFixedReplicationPathSegments({
+      foType: mappedFoTypeFolder,
+      foTypeRaw: normalizeFolderName(options.businessObjectType),
+      foId: normalizedFoId,
+      source: normalizeFolderName(options.sourceLocation || "unknown"),
+      destination: normalizeFolderName(options.destinationLocation || "unknown"),
+      attachment: "Attachment"
+    });
+
+    let uploadParentId = rootFolderId;
+    for (const segment of pathSegments) {
+      uploadParentId = await this.ensureChildFolder(uploadParentId, segment);
+    }
+
+    await this.deleteReplicas(documentId);
+
+    const response = await this.drive.files.create({
+      requestBody: {
+        name: fileName,
+        mimeType: contentType,
+        parents: [uploadParentId],
+        appProperties: {
+          documentId,
+          businessObjectType: options.businessObjectType,
+          businessObjectId: options.businessObjectId,
+          sourceLocation: options.sourceLocation || "",
+          destinationLocation: options.destinationLocation || ""
+        }
+      },
+      media: {
+        mimeType: contentType,
+        body: createReadStream(filePath)
       },
       fields: "id",
       supportsAllDrives: true

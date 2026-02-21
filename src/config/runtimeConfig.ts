@@ -2,6 +2,8 @@ type RuntimeAppConfig = {
   google_drive_folder_id?: string;
   replicate_to_drive?: string;
   replicate_to_drive_strict?: string;
+  drive_replication_path_template?: string;
+  drive_replication_fo_type_map?: string;
   google_drive_client_id?: string;
   google_drive_client_secret?: string;
   google_drive_refresh_token?: string;
